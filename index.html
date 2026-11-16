@@ -1,0 +1,2111 @@
+<!doctype html>
+<!--
+  Spacebar: a local work planner for product managers. One HTML file, no server.
+
+  WHERE DATA LIVES
+  - Always in this browser (localStorage key "spacebar.data.v1").
+  - Optionally in a linked JSON file (Settings > Data and Claude > Create data file).
+    The page writes every change to that file and reloads within about 2 seconds
+    when the file changes on disk. That is how Claude (or any tool) can edit your
+    workspace: edit the JSON file, not this HTML.
+
+  DATA MODEL (also written into the JSON file as "_readme")
+  settings    { name, priorityCap, dailyCap, objectiveCap, cycleDays, cycleStart: "YYYY-MM-DD", theme }
+  stages      [{ id, name, hint }]                     board columns, in order
+  modes       [{ id, name, hint }]                     the kind of energy a task needs
+  objectives  [{ id, title, status: on|risk|off }]     goals for the current cycle (the Weekly plan)
+  initiatives [{ id, name, stage, priority, link, milestones: [{ id, date, label, done }] }]
+  tasks       [{ id, title, ini, mode, obj, link, done, doneAt }]   next steps; ini = initiative id
+  daily       [taskId, ...]                            the Daily plan (closed list), in order, at most settings.dailyCap
+  notes       "..."                                    the Scratchpad, plain text
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spacebar</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#F2F2F0; --panel:#F8F8F6; --card:#FFFFFF; --raise:#FFFFFF; --hover:#ECECE9;
+  --ink:#202327; --ink2:#4A4E55; --mute:#7D8087; --faint:#AEB0B5; --line:#E4E3E0; --line2:#D6D5D1;
+  --ring:#8C9098; --btn:#2A2D32; --btn-ink:#FFFFFF;
+  --on:#8AAE93; --risk:#CFAF6B; --off:#C7948C;
+  --sh1:0 1px 2px rgba(28,30,34,.05);
+  --sh2:0 6px 20px rgba(28,30,34,.08),0 1px 3px rgba(28,30,34,.05);
+  --sh3:0 24px 64px rgba(28,30,34,.16),0 6px 16px rgba(28,30,34,.07);
+  --scrim:rgba(242,242,240,.38); --toast:#2A2D32; --tip:#2A2D32;
+  --font:"Figtree",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --bg:#151618; --panel:#1A1B1E; --card:#222428; --raise:#25272B; --hover:#2B2D32;
+    --ink:#E9EAEC; --ink2:#C4C6CB; --mute:#92959C; --faint:#5F6269; --line:#2C2E33; --line2:#3A3C42;
+    --ring:#8C9098; --btn:#E9EAEC; --btn-ink:#151618;
+    --on:#7FA58A; --risk:#C4A666; --off:#BF8C85;
+    --sh1:0 1px 2px rgba(0,0,0,.3); --sh2:0 6px 18px rgba(0,0,0,.4); --sh3:0 24px 64px rgba(0,0,0,.6);
+    --scrim:rgba(14,15,17,.42); --toast:#3A3C42; --tip:#3A3C42; color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#151618; --panel:#1A1B1E; --card:#222428; --raise:#25272B; --hover:#2B2D32;
+  --ink:#E9EAEC; --ink2:#C4C6CB; --mute:#92959C; --faint:#5F6269; --line:#2C2E33; --line2:#3A3C42;
+  --ring:#8C9098; --btn:#E9EAEC; --btn-ink:#151618;
+  --on:#7FA58A; --risk:#C4A666; --off:#BF8C85;
+  --sh1:0 1px 2px rgba(0,0,0,.3); --sh2:0 6px 18px rgba(0,0,0,.4); --sh3:0 24px 64px rgba(0,0,0,.6);
+  --scrim:rgba(14,15,17,.42); --toast:#3A3C42; --tip:#3A3C42; color-scheme:dark;
+}
+
+*{box-sizing:border-box}
+html,body{height:100%;margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 var(--font);-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font:inherit;color:inherit;background:none;border:0;padding:0;cursor:pointer}
+button:disabled{opacity:.35;cursor:default}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[role="button"]:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+input,select,textarea{font:inherit;color:inherit}
+svg{display:block}
+.i{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;flex:none}
+kbd{display:inline-block;min-width:18px;padding:2px 5px;border-radius:5px;background:var(--card);border:1px solid var(--line);border-bottom-width:2px;color:var(--mute);font:600 11px/1.2 var(--font);text-align:center}
+
+#app{height:100vh;display:grid;grid-template-rows:52px minmax(0,1fr)}
+
+/* Top bar */
+.topbar{display:flex;align-items:center;gap:4px;padding:0 12px 0 22px;background:var(--panel);border-bottom:1px solid var(--line);min-width:0;overflow:hidden}
+.brand{font-weight:700;font-size:15px;letter-spacing:-.01em;white-space:nowrap}
+.tb-search{display:flex;align-items:center;gap:8px;height:32px;padding:0 6px 0 10px;border-radius:9px;width:min(300px,28vw);margin-left:24px;color:var(--faint);cursor:text}
+.tb-search:hover{background:var(--bg)}
+.tb-search:focus-within{background:var(--card);box-shadow:0 0 0 1px var(--line2);color:var(--mute)}
+.tb-search:focus-within kbd{visibility:hidden}
+.tb-search input{flex:1;min-width:0;border:0;background:none;outline:none;font-size:13.5px}
+.tb-search input::placeholder{color:var(--faint)}
+.tb-search input::-webkit-search-cancel-button{display:none}
+.tb-sp{flex:1}
+.tb-btn{display:flex;align-items:center;gap:8px;height:32px;padding:0 8px 0 12px;border-radius:9px;color:var(--ink2);font-size:13px;font-weight:600;white-space:nowrap}
+.tb-btn:hover,.tb-btn.on{background:var(--hover)}
+.tb-warn{display:flex;align-items:center;height:30px;padding:0 10px;border-radius:9px;font-size:12.5px;font-weight:600;color:var(--ink2);background:var(--hover);white-space:nowrap}
+.tb-warn[hidden]{display:none}
+.icb{width:32px;height:32px;border-radius:9px;display:grid;place-items:center;color:var(--mute);flex:none}
+.icb:hover{background:var(--bg);color:var(--ink)}
+.icb.on{color:var(--ink);background:var(--hover)}
+.icb.on .i{fill:currentColor}
+
+/* Hover toolbars and icon buttons */
+.tools{position:absolute;top:5px;right:5px;display:flex;align-items:center;gap:1px;padding-left:18px;background:linear-gradient(90deg,transparent,var(--tb,var(--card)) 16px);opacity:0;pointer-events:none;transition:opacity .12s}
+.ic{width:26px;height:26px;border-radius:7px;display:grid;place-items:center;color:var(--mute);flex:none}
+.ic.sm{width:24px;height:24px}
+.ic:hover{background:var(--hover);color:var(--ink)}
+.ic.on{color:var(--ink)}
+.ic.on .dt{fill:currentColor}
+.hov{opacity:0;transition:opacity .12s}
+@media (hover:none){.tools,.hov{opacity:1;pointer-events:auto}}
+
+/* Tooltip */
+.tip{position:fixed;z-index:400;max-width:280px;padding:5px 8px;border-radius:7px;background:var(--tip);color:#F1F2F4;font-size:12px;line-height:1.35;pointer-events:none;opacity:0;transform:translateY(2px);transition:opacity .1s,transform .1s}
+.tip.on{opacity:1;transform:none}
+
+/* Board */
+.board{min-width:0;min-height:0;display:flex;flex-direction:column;position:relative}
+.note-line{display:flex;align-items:center;gap:16px;margin:14px 70px 0 24px;font-size:13px;color:var(--mute)}
+.note-line button{font-weight:600;color:var(--ink)}
+.note-line button.q{color:var(--mute);font-weight:500}
+.note-line button:hover{text-decoration:underline}
+.cols{flex:1;min-height:0;display:grid;grid-auto-flow:column;grid-auto-columns:minmax(280px,1fr);gap:22px;padding:18px 66px 0 24px;overflow-x:auto;overflow-y:hidden}
+.col{display:flex;flex-direction:column;min-height:0;min-width:0}
+.col-head{display:flex;align-items:center;gap:8px;padding:0 2px 12px;min-height:38px}
+.col-name{font-size:16px;font-weight:700;letter-spacing:-.015em}
+.col-count{font-size:12.5px;color:var(--faint);font-weight:600}
+.col-head .ic{margin-left:auto}
+.col-body{flex:1;min-height:80px;overflow-y:auto;overflow-x:hidden;display:flex;flex-direction:column;gap:10px;padding:2px 2px 28px;margin:0 -2px;scrollbar-width:thin}
+.empty-add{display:flex;align-items:center;gap:7px;height:40px;padding:0 12px;border-radius:11px;border:1px dashed var(--line2);color:var(--mute);font-size:13px;font-weight:500;flex:none}
+.empty-add:hover{color:var(--ink);background:var(--panel)}
+
+/* Initiative */
+.ini{position:relative;border:1px solid var(--line);border-radius:12px;padding:8px 8px 10px;flex:none;--tb:var(--bg)}
+.ini.prio{background:var(--card);box-shadow:var(--sh1);--tb:var(--card)}
+.ini.folded{padding-bottom:9px}
+body.kbd .ini.sel{box-shadow:0 0 0 1.5px var(--ring)}
+.ini-top{cursor:grab;user-select:none;-webkit-user-select:none}
+.ini-head{display:flex;align-items:flex-start;gap:4px;cursor:pointer;border-radius:8px;padding:2px 0 2px 2px}
+.ini-head:hover .hov,body.kbd .ini.sel .ini-head .hov{opacity:1}
+.chev{width:18px;height:20px;display:grid;place-items:center;color:var(--faint);flex:none}
+.chev .i{width:13px;height:13px;transition:transform .18s}
+.ini:not(.folded) .ini-head .chev .i,.obj.open .obj-row .chev .i{transform:rotate(90deg)}
+.ini-head:hover .chev,.obj-row:hover .chev{color:var(--ink2)}
+.ini-name{flex:1;min-width:0;font-weight:650;font-size:14px;letter-spacing:-.005em;line-height:1.4;padding:0 2px;border-radius:4px;outline:none;word-break:break-word}
+.pstar{color:var(--ink2);margin-top:3px;flex:none}
+.pstar .i{width:13px;height:13px;fill:currentColor}
+.ini-acts{display:flex;align-items:center;gap:0;margin:-2px -2px 0 0;flex:none}
+.ini-date{display:flex;gap:6px;max-width:100%;margin:1px 0 0 24px;font-size:12.5px;color:var(--mute);text-align:left;min-width:0}
+.ini-date b{font-weight:600;color:var(--ink2);white-space:nowrap}
+.ini-date span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.ini-date:hover span{text-decoration:underline}
+.fold-info{display:flex;align-items:center;margin:4px 0 0 24px;font-size:12.5px;color:var(--mute)}
+.fold-info:hover{color:var(--ink)}
+.tasks{display:flex;flex-direction:column;gap:6px;min-height:4px;margin-top:8px}
+.done-list{margin-top:6px;padding-top:4px;border-top:1px solid var(--line)}
+.dn{display:flex;align-items:flex-start;gap:9px;padding:5px 4px;font-size:12.5px;color:var(--mute)}
+.dn .check{width:15px;height:15px}
+.dn span{text-decoration:line-through;flex:1;min-width:0}
+
+/* Task */
+.task{position:relative;display:flex;gap:10px;align-items:flex-start;background:var(--card);border:1px solid var(--line);border-radius:9px;padding:9px 10px;cursor:grab;user-select:none;-webkit-user-select:none;--tb:var(--card)}
+.task:hover{border-color:var(--line2)}
+.task:hover>.tools,body.kbd .task.sel>.tools{opacity:1;pointer-events:auto}
+body.kbd .task.sel{box-shadow:0 0 0 1.5px var(--ring);border-color:transparent}
+.check{width:16px;height:16px;border-radius:50%;border:1.5px solid var(--line2);display:grid;place-items:center;flex:none;margin-top:1.5px;color:transparent;background:var(--card);transition:background .15s,border-color .15s,color .15s}
+.check .i{width:10px;height:10px;stroke-width:2.8}
+.check:hover{border-color:var(--on);color:var(--on)}
+.check.on,.completing .check{background:var(--on);border-color:var(--on);color:#fff}
+.t-body{flex:1;min-width:0}
+.t-title{font-size:13.5px;line-height:1.4;outline:none;border-radius:4px;cursor:text;word-break:break-word;min-height:19px}
+.t-meta{display:flex;gap:12px;margin-top:2px}
+.tok{font-size:12px;color:var(--mute);border-radius:4px}
+.tok:hover{color:var(--ink)}
+.marks{position:absolute;top:8px;right:8px;display:flex;gap:2px;transition:opacity .12s}
+.mk{width:20px;height:20px;display:grid;place-items:center;color:var(--faint);border-radius:6px}
+.mk .i{width:13px;height:13px}
+.mk .dt{fill:currentColor}
+button.mk:hover{color:var(--ink);background:var(--hover)}
+.task:hover>.marks,body.kbd .task.sel>.marks{opacity:0}
+.task.m1 .t-title{padding-right:20px}
+.task.m2 .t-title{padding-right:42px}
+.completing{opacity:.55;transition:opacity .3s}
+.completing .t-title{text-decoration:line-through;color:var(--mute)}
+[data-edit]:empty::before{content:attr(data-ph);color:var(--faint);pointer-events:none}
+.editing{user-select:text!important;-webkit-user-select:text!important;background:var(--card);box-shadow:0 0 0 1px var(--card),0 0 0 2.5px var(--ring);cursor:text!important}
+
+/* Planner: Daily and Weekly cards */
+.scrim{position:fixed;inset:0;z-index:35;background:var(--scrim);backdrop-filter:blur(6px) saturate(.85);-webkit-backdrop-filter:blur(6px) saturate(.85);opacity:0;pointer-events:none;transition:opacity .28s ease}
+.scrim.on{opacity:1;pointer-events:auto}
+.deck{position:fixed;top:62px;bottom:14px;right:18px;width:420px;z-index:40;pointer-events:none}
+.dcard{position:absolute;left:0;right:0;top:76px;bottom:0;background:var(--raise);border:1px solid var(--line);border-radius:20px;box-shadow:var(--sh3);display:flex;flex-direction:column;pointer-events:auto;transform-origin:50% 0;overflow:hidden;will-change:transform;
+  transition:transform .5s cubic-bezier(.2,.9,.28,1.06)}
+.deck[data-mode="min"] .dcard{transition:transform .38s cubic-bezier(.45,0,.2,1);pointer-events:none}
+.dcard>.dhead,.dcard>.dlist{transition:opacity .2s ease}
+.dcard:not(.front)>*{pointer-events:none}
+.dcard:not(.front){cursor:pointer;background:var(--panel)}
+.dcard:not(.front)>.dlist,.dcard:not(.front) .dctl{opacity:0}
+.dhead{display:flex;align-items:center;gap:10px;padding:0 10px 0 22px;height:52px;flex:none;touch-action:none;user-select:none}
+.dcard.front .dhead{cursor:grab}
+.dhead h2{margin:0;font-size:17px;font-weight:700;letter-spacing:-.02em}
+.dcount{font-size:13px;color:var(--mute);font-weight:600;font-variant-numeric:tabular-nums}
+.dctl{margin-left:auto;display:flex;gap:2px}
+.dlist{flex:1;min-height:0;overflow-y:auto;padding:0 12px 24px}
+.dg{margin-top:6px}
+.dg+.dg{margin-top:16px}
+.dg-label{display:flex;gap:8px;padding:0 10px 4px;font-size:12px;font-weight:700;color:var(--mute)}
+.dg-label span{color:var(--faint);font-weight:600}
+.dl{display:flex;flex-direction:column;min-height:6px}
+.drow{position:relative;display:flex;align-items:flex-start;gap:10px;padding:8px 10px;border-radius:9px;cursor:grab;user-select:none;-webkit-user-select:none;--tb:var(--hover)}
+.drow:hover,body.kbd .drow.sel{background:var(--hover)}
+.drow:hover>.tools,body.kbd .drow.sel>.tools{opacity:1;pointer-events:auto}
+.drow:hover>.marks,body.kbd .drow.sel>.marks{opacity:0}
+body.kbd .drow.sel{box-shadow:0 0 0 1.5px var(--ring)}
+.drow.m1 .t-title{padding-right:20px}
+.dr-main{flex:1;min-width:0}
+.dr-ini{font-size:12px;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dempty{display:flex;align-items:center;justify-content:center;text-align:center;min-height:170px;margin:8px 4px;padding:20px;border:1px dashed var(--line2);border-radius:14px;color:var(--mute);font-size:13px;line-height:1.55}
+.dhint{position:absolute;left:12px;right:12px;bottom:12px;padding:10px 12px;border-radius:11px;background:var(--btn);color:var(--btn-ink);font-size:13px;font-weight:600;text-align:center;opacity:0;transform:translateY(6px);transition:opacity .15s,transform .15s;pointer-events:none}
+body.drag-out .dcard[data-card="daily"] .dhint{opacity:1;transform:none}
+body.drag-out .dnd-fallback{opacity:.45!important}
+.resizer{position:absolute;left:-8px;top:76px;bottom:0;width:12px;cursor:col-resize;pointer-events:auto;z-index:20;display:flex;justify-content:center}
+.resizer::after{content:"";width:3px;height:44px;border-radius:2px;background:var(--line2);align-self:center;opacity:0;transition:opacity .15s}
+.resizer:hover::after,.resizing .resizer::after{opacity:1}
+.deck[data-mode="min"] .resizer{display:none}
+.resizing,.resizing *{cursor:col-resize!important;user-select:none}
+.resizing .dcard{transition:none}
+
+/* Scratchpad card */
+.dcard[data-card="notes"] .dlist{display:flex;padding:0;overflow:hidden}
+.notes{flex:1;width:100%;border:0;outline:none;resize:none;background:transparent;padding:2px 22px 24px;font:14px/1.65 var(--font);color:var(--ink)}
+.notes::placeholder{color:var(--faint)}
+
+/* Weekly card: objectives */
+.obj{border-radius:12px;position:relative}
+.obj.open{background:var(--card);box-shadow:0 0 0 1px var(--line);margin:6px 0}
+body.kbd .obj.sel{box-shadow:0 0 0 1.5px var(--ring)}
+.obj-row{display:flex;align-items:flex-start;gap:8px;padding:10px 10px 10px 4px;border-radius:12px;cursor:pointer;position:relative}
+.obj:not(.open) .obj-row:hover{background:var(--hover)}
+.obj-row .chev{height:20px}
+.onum{font-size:12.5px;font-weight:700;color:var(--faint);margin-top:1px;flex:none;width:10px}
+.obj-title{flex:1;min-width:0;font-size:14px;font-weight:600;line-height:1.4;outline:none;border-radius:4px;word-break:break-word}
+.obj:not(.open) .obj-title:not(.editing){display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.sdot{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;flex:none}
+.sdot::after{content:"";width:9px;height:9px;border-radius:50%;background:var(--on)}
+.sdot.s-risk::after{background:var(--risk)}
+.sdot.s-off::after{background:var(--off)}
+.sdot:hover{background:var(--hover)}
+.oprog{font-size:12px;color:var(--mute);min-width:24px;text-align:right;margin-top:1px;font-variant-numeric:tabular-nums}
+.obj-drop{position:absolute;inset:0;display:none;border-radius:12px;z-index:2}
+body.drag-task .obj-drop{display:block}
+body.drag-task .obj-row{box-shadow:inset 0 0 0 1px var(--line2)}
+.obj-drop .dnd-ghost{display:none}
+.obj-body{padding:0 8px 6px 40px}
+.obj-tasks{display:flex;flex-direction:column;min-height:4px}
+.otask{position:relative;display:flex;align-items:flex-start;gap:9px;padding:6px 8px;border-radius:8px;--tb:var(--hover)}
+.otask:hover,body.kbd .otask.sel{background:var(--hover)}
+.otask:hover .tools,body.kbd .otask.sel .tools{opacity:1;pointer-events:auto}
+body.kbd .otask.sel{box-shadow:0 0 0 1.5px var(--ring)}
+.otask .check{width:15px;height:15px;margin-top:2px}
+.ot-main{flex:1;min-width:0}
+.ot-title{font-size:13px;line-height:1.38;outline:none;cursor:text;border-radius:4px;word-break:break-word}
+.ot-ini{font-size:11.5px;color:var(--mute)}
+.otask.done .ot-title{text-decoration:line-through;color:var(--mute)}
+.obj-foot{display:flex;align-items:center;justify-content:space-between;margin-top:2px}
+.qlink{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:7px;font-size:12.5px;color:var(--mute);font-weight:500}
+.qlink .i{width:13px;height:13px}
+.qlink:hover{background:var(--hover);color:var(--ink)}
+.add-obj{margin:8px 0 0 6px}
+.obj-empty{padding:4px 10px 6px;font-size:13px;color:var(--mute);line-height:1.5}
+.over-note{display:flex;align-items:center;gap:8px;margin:4px 8px 8px;font-size:12.5px;color:var(--mute)}
+.over-note button{font-weight:600;color:var(--ink)}
+
+/* Minimised planner */
+.spine{position:fixed;right:0;top:100px;bottom:14px;width:44px;z-index:39;background:var(--raise);border:1px solid var(--line);border-right:0;border-radius:16px 0 0 16px;box-shadow:var(--sh2);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;cursor:pointer;transition:transform .35s cubic-bezier(.2,.8,.2,1),background .2s}
+.spine:hover{transform:translateX(-4px);background:var(--panel)}
+.spine.hide{transform:translateX(110%);pointer-events:none}
+.sp-l{writing-mode:vertical-rl;transform:rotate(180deg);font-size:13px;font-weight:700;color:var(--ink2)}
+.sp-n{font-size:12px;font-weight:700;color:var(--mute);font-variant-numeric:tabular-nums}
+.sp-dots{display:flex;flex-direction:column;gap:7px}
+.sp-dots i{width:8px;height:8px;border-radius:50%;background:var(--on)}
+.sp-dots i.s-risk{background:var(--risk)}
+.sp-dots i.s-off{background:var(--off)}
+.spine-drop{position:absolute;inset:0;border-radius:inherit}
+.spine-drop .dnd-ghost{display:none}
+body.drag-task .spine{background:var(--hover);transform:translateX(-6px)}
+
+/* Drag and drop */
+.dnd-ghost{background:var(--hover)!important;border-color:transparent!important;box-shadow:none!important}
+.dnd-ghost>*{opacity:0}
+.dnd-fallback{opacity:1!important;rotate:1.5deg;box-shadow:var(--sh3)!important}
+body.dragging,body.dragging *{cursor:grabbing!important;user-select:none}
+
+/* Popovers */
+.pop{position:fixed;z-index:100;min-width:240px;max-width:360px;background:var(--raise);border:1px solid var(--line);border-radius:12px;box-shadow:var(--sh3);padding:6px;opacity:0;transform:translateY(-4px) scale(.98);transition:opacity .14s,transform .14s;transform-origin:top left}
+.pop.in{opacity:1;transform:none}
+.pop.wide{width:390px;max-width:calc(100vw - 20px)}
+.pop-h{display:flex;align-items:baseline;gap:8px;padding:6px 8px 4px;font-size:13px;font-weight:700;min-width:0}
+.pop-h span{font-weight:500;color:var(--mute);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.pop-sub{padding:0 8px 6px;font-size:12.5px;color:var(--mute);line-height:1.45}
+.mi{display:flex;align-items:center;gap:10px;width:100%;text-align:left;padding:7px 8px;border-radius:8px;font-size:13px;min-height:34px}
+.mi:hover,.mi.hi{background:var(--bg)}
+.mi.cur{font-weight:700}
+.mi.cur::after{content:"";width:6px;height:6px;border-radius:50%;background:var(--ink2);margin-left:auto;flex:none}
+.mi .i{color:var(--mute)}
+.mi kbd{flex:none}
+.mi .sk{margin-left:auto;color:var(--faint);font-size:11.5px;font-weight:600;flex:none}
+.mt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mt small{display:block;font-size:11.5px;color:var(--mute);font-weight:500;overflow:hidden;text-overflow:ellipsis}
+.mh{color:var(--mute);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+.mdot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--on)}
+.mdot.s-risk{background:var(--risk)}.mdot.s-off{background:var(--off)}
+.msep{height:1px;background:var(--line);margin:4px 6px}
+.pop-f{padding:7px 8px 3px;font-size:11.5px;color:var(--faint);border-top:1px solid var(--line);margin-top:4px}
+.pin{width:100%;height:34px;border-radius:8px;border:1px solid var(--line2);background:var(--card);padding:0 10px;outline:none;font-size:13px}
+.pin:focus{border-color:var(--ring)}
+.pop-pad{padding:2px 4px}
+.pop-row{display:flex;align-items:center;gap:6px;padding:8px 4px 2px}
+.pop-hint{margin-left:auto;font-size:11.5px;color:var(--faint)}
+.btn-s{height:28px;padding:0 10px;border-radius:7px;background:var(--bg);font-size:12.5px;font-weight:700}
+.btn-s:hover{background:var(--line)}
+.tl{display:flex;flex-direction:column;gap:2px;padding:2px 2px 6px;max-height:280px;overflow:auto}
+.tl-row,.tl-add{display:flex;align-items:center;gap:6px}
+.tl-row{padding:2px}
+.tl-row .check{width:16px;height:16px}
+.tl-d{height:30px;border-radius:7px;border:1px solid var(--line);background:var(--card);padding:0 6px;font-size:12.5px;width:136px;flex:none;outline:none}
+.tl-d:focus{border-color:var(--ring)}
+.tl-l{flex:1;min-width:0;height:30px;border-radius:7px;border:1px solid transparent;background:none;padding:0 8px;font-size:13px;outline:none}
+.tl-l:hover{border-color:var(--line)}
+.tl-l:focus{border-color:var(--ring);background:var(--card)}
+.tl-row.done .tl-l{text-decoration:line-through;color:var(--mute)}
+.tl-row .ic{opacity:.6}
+.tl-add{border-top:1px solid var(--line);padding:8px 2px 2px}
+.tl-add .tl-l{border-color:var(--line);background:var(--card)}
+.tl-empty{padding:6px 8px 10px;font-size:12.5px;color:var(--mute);line-height:1.45}
+.lt{max-height:300px;overflow:auto;margin-top:6px}
+.lt .mt{white-space:normal}
+
+/* Modals */
+.modal-bg{position:fixed;inset:0;background:rgba(20,22,26,.3);z-index:200;display:grid;place-items:center;padding:24px;opacity:0;transition:opacity .18s}
+.modal-bg.in{opacity:1}
+.modal{width:min(680px,100%);max-height:calc(100vh - 48px);overflow:auto;background:var(--raise);border-radius:18px;box-shadow:var(--sh3);padding:20px 24px 24px;transform:translateY(8px) scale(.985);transition:transform .2s}
+.modal.small{width:min(420px,100%)}
+.modal-bg.in .modal{transform:none}
+.mh-row{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+.mh-row h2{flex:1;margin:0;font-size:20px;letter-spacing:-.02em}
+.modal h3{margin:22px 0 6px;font-size:14px;display:flex;align-items:baseline;gap:10px}
+.modal h3 small{font-weight:500;color:var(--mute);font-size:12.5px}
+.note{margin:0 0 10px;font-size:12.5px;color:var(--mute);line-height:1.5}
+.field{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+.field label{flex:1;font-size:13.5px;font-weight:500}
+.field label small{display:block;color:var(--mute);font-size:12px;font-weight:400}
+.inp{height:32px;border-radius:8px;border:1px solid var(--line2);background:var(--card);padding:0 10px;font-size:13px;outline:none;min-width:0}
+.inp:focus{border-color:var(--ring)}
+.inp.num{width:76px}
+select.inp{padding:0 6px}
+.rowed{display:flex;align-items:center;gap:6px;padding:4px 0}
+.rowed .g1{flex:1}
+.rowed .g2{flex:1.7}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 13px;border-radius:9px;font-size:13px;font-weight:700;background:var(--bg);color:var(--ink);white-space:nowrap}
+.btn:hover{background:var(--line)}
+.btn.pri{background:var(--btn);color:var(--btn-ink)}
+.btn.pri:hover{opacity:.9}
+.btn.sm{height:28px;font-size:12.5px;margin-top:6px}
+.btnrow{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
+.btnrow.end{justify-content:flex-end}
+.syncbox{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:11px;background:var(--bg);font-size:13px;margin-bottom:6px}
+.syncbox i{width:8px;height:8px;border-radius:50%;background:var(--faint);flex:none}
+.syncbox.on i{background:var(--on)}
+.syncbox.warn i{background:var(--risk)}
+.syncbox .sp{flex:1}
+.confirm-msg{margin:4px 0 14px;font-size:14px;line-height:1.5}
+.ta{width:100%;height:220px;border-radius:10px;border:1px solid var(--line2);background:var(--card);padding:10px 12px;font:12.5px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;outline:none;resize:vertical}
+.ta:focus{border-color:var(--ring)}
+.err{color:var(--ink2);font-size:12.5px;margin-top:6px;min-height:18px}
+.smodal{width:min(860px,100%);height:min(640px,calc(100vh - 48px));padding:0;display:grid;grid-template-columns:200px minmax(0,1fr);overflow:hidden}
+.snav{background:var(--panel);border-right:1px solid var(--line);padding:18px 10px;display:flex;flex-direction:column;gap:2px}
+.snav h2{margin:0 0 12px 10px;font-size:17px;letter-spacing:-.02em}
+.snav button{display:flex;align-items:center;height:34px;padding:0 10px;border-radius:8px;font-size:13.5px;font-weight:500;color:var(--ink2);text-align:left}
+.snav button:hover{background:var(--hover)}
+.snav button.cur{background:var(--hover);color:var(--ink);font-weight:700}
+.spane{overflow-y:auto;padding:22px 28px 28px;position:relative}
+.spane-h{display:flex;align-items:flex-start;gap:12px;margin-bottom:18px}
+.spane-h div{flex:1}
+.spane-h h3{margin:0;font-size:18px;letter-spacing:-.015em}
+.spane-h p{margin:4px 0 0;font-size:13px;color:var(--mute);line-height:1.5}
+.sgroup{border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:22px}
+.sgroup-h{font-size:13px;font-weight:700;color:var(--ink2);margin:0 0 8px 2px}
+.sgroup-h small{display:block;font-weight:400;color:var(--mute);font-size:12.5px;margin-top:2px}
+.srow{display:flex;align-items:center;gap:16px;padding:12px 16px;min-height:54px}
+.srow+.srow{border-top:1px solid var(--line)}
+.srow label{flex:1;font-size:13.5px;font-weight:500}
+.srow label small{display:block;color:var(--mute);font-size:12px;font-weight:400;margin-top:1px}
+.srow.list{gap:6px;padding:8px 10px 8px 12px;min-height:0}
+.srow.list .g1{flex:1}
+.srow.list .g2{flex:1.7}
+.srow.add{padding:6px 8px;min-height:0}
+.srow .btnrow{margin-top:0}
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:4px 28px}
+.kgroup h4{margin:16px 0 4px;font-size:13px}
+.krow{display:flex;justify-content:space-between;align-items:center;gap:10px;font-size:13px;padding:5px 0;border-bottom:1px solid var(--line);color:var(--ink2)}
+.krow span:last-child{display:flex;gap:3px;flex:none;align-items:center;color:var(--faint);font-size:11.5px}
+
+/* Toasts */
+.toasts{position:fixed;left:50%;bottom:22px;transform:translateX(-50%);z-index:300;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none}
+.toast{pointer-events:auto;display:flex;align-items:center;gap:14px;padding:9px 10px 9px 14px;border-radius:11px;background:var(--toast);color:#F1F2F4;font-size:13px;box-shadow:var(--sh3);animation:tin .22s cubic-bezier(.2,.8,.2,1);max-width:min(560px,calc(100vw - 32px))}
+.toast button{color:#FFFFFF;font-weight:700;font-size:12.5px;padding:3px 6px;border-radius:6px;text-decoration:underline;text-underline-offset:2px}
+.toast button:hover{background:rgba(255,255,255,.1)}
+@keyframes tin{from{opacity:0;transform:translateY(8px)}}
+.shake{animation:shake .34s}
+@keyframes shake{20%,60%{transform:translateX(-3px)}40%,80%{transform:translateX(3px)}}
+
+@media (max-width:760px){.smodal{grid-template-columns:1fr;grid-template-rows:auto minmax(0,1fr)}.snav{flex-direction:row;overflow-x:auto;border-right:0;border-bottom:1px solid var(--line);padding:10px}.snav h2{display:none}.snav button{flex:none}.brand{display:none}.tb-search{margin-left:0;min-width:0;flex:1}.tb-search kbd,#tb-keys{display:none}.tb-btn kbd{display:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}}
+</style>
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="brand" id="tb-name">Spacebar</div>
+    <label class="tb-search"><span id="tb-search-ic"></span><input id="search" type="search" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search tasks and initiatives"><kbd>/</kbd></label>
+    <div class="tb-sp"></div>
+    <button class="tb-warn" id="tb-warn" data-act="sync" hidden></button>
+    <button class="icb" id="tb-prio" data-act="prioFilter"></button>
+    <button class="tb-btn" id="tb-plan" data-act="togglePlan" data-tip="Open the Planner. Space cycles Daily, Weekly, Scratchpad and closed">Planner<kbd>Space</kbd></button>
+    <button class="icb" id="tb-keys" data-act="shortcuts" data-tip="Keyboard shortcuts ( ? )"></button>
+    <button class="icb" id="tb-gear" data-act="settings" data-tip="Settings"></button>
+  </header>
+  <section class="board" id="board" aria-label="Initiatives board"></section>
+</div>
+<div class="scrim" id="scrim"></div>
+<div class="deck" id="deck" data-mode="min"><div class="resizer" id="resizer" data-tip="Drag to resize"></div></div>
+<div class="spine" id="spine" data-act="openPlan" role="button" tabindex="0" data-tip="Planner (Space)"><span class="sp-n" id="sp-n"></span><span class="sp-l">Planner</span><span class="sp-dots" id="sp-dots"></span><div class="spine-drop" data-zone="daily"></div></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<script>/*! Sortable 1.15.6 - MIT | git://github.com/SortableJS/Sortable.git */
+!function(t,e){"object"==typeof exports&&"undefined"!=typeof module?module.exports=e():"function"==typeof define&&define.amd?define(e):(t=t||self).Sortable=e()}(this,function(){"use strict";function e(e,t){var n,o=Object.keys(e);return Object.getOwnPropertySymbols&&(n=Object.getOwnPropertySymbols(e),t&&(n=n.filter(function(t){return Object.getOwnPropertyDescriptor(e,t).enumerable})),o.push.apply(o,n)),o}function I(o){for(var t=1;t<arguments.length;t++){var i=null!=arguments[t]?arguments[t]:{};t%2?e(Object(i),!0).forEach(function(t){var e,n;e=o,t=i[n=t],n in e?Object.defineProperty(e,n,{value:t,enumerable:!0,configurable:!0,writable:!0}):e[n]=t}):Object.getOwnPropertyDescriptors?Object.defineProperties(o,Object.getOwnPropertyDescriptors(i)):e(Object(i)).forEach(function(t){Object.defineProperty(o,t,Object.getOwnPropertyDescriptor(i,t))})}return o}function o(t){return(o="function"==typeof Symbol&&"symbol"==typeof Symbol.iterator?function(t){return typeof t}:function(t){return t&&"function"==typeof Symbol&&t.constructor===Symbol&&t!==Symbol.prototype?"symbol":typeof t})(t)}function a(){return(a=Object.assign||function(t){for(var e=1;e<arguments.length;e++){var n,o=arguments[e];for(n in o)Object.prototype.hasOwnProperty.call(o,n)&&(t[n]=o[n])}return t}).apply(this,arguments)}function i(t,e){if(null==t)return{};var n,o=function(t,e){if(null==t)return{};for(var n,o={},i=Object.keys(t),r=0;r<i.length;r++)n=i[r],0<=e.indexOf(n)||(o[n]=t[n]);return o}(t,e);if(Object.getOwnPropertySymbols)for(var i=Object.getOwnPropertySymbols(t),r=0;r<i.length;r++)n=i[r],0<=e.indexOf(n)||Object.prototype.propertyIsEnumerable.call(t,n)&&(o[n]=t[n]);return o}function r(t){return function(t){if(Array.isArray(t))return l(t)}(t)||function(t){if("undefined"!=typeof Symbol&&null!=t[Symbol.iterator]||null!=t["@@iterator"])return Array.from(t)}(t)||function(t,e){if(t){if("string"==typeof t)return l(t,e);var n=Object.prototype.toString.call(t).slice(8,-1);return"Map"===(n="Object"===n&&t.constructor?t.constructor.name:n)||"Set"===n?Array.from(t):"Arguments"===n||/^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)?l(t,e):void 0}}(t)||function(){throw new TypeError("Invalid attempt to spread non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method.")}()}function l(t,e){(null==e||e>t.length)&&(e=t.length);for(var n=0,o=new Array(e);n<e;n++)o[n]=t[n];return o}function t(t){if("undefined"!=typeof window&&window.navigator)return!!navigator.userAgent.match(t)}var y=t(/(?:Trident.*rv[ :]?11\.|msie|iemobile|Windows Phone)/i),w=t(/Edge/i),s=t(/firefox/i),u=t(/safari/i)&&!t(/chrome/i)&&!t(/android/i),c=t(/iP(ad|od|hone)/i),n=t(/chrome/i)&&t(/android/i),d={capture:!1,passive:!1};function h(t,e,n){t.addEventListener(e,n,!y&&d)}function p(t,e,n){t.removeEventListener(e,n,!y&&d)}function f(t,e){if(e&&(">"===e[0]&&(e=e.substring(1)),t))try{if(t.matches)return t.matches(e);if(t.msMatchesSelector)return t.msMatchesSelector(e);if(t.webkitMatchesSelector)return t.webkitMatchesSelector(e)}catch(t){return}}function g(t){return t.host&&t!==document&&t.host.nodeType?t.host:t.parentNode}function P(t,e,n,o){if(t){n=n||document;do{if(null!=e&&(">"!==e[0]||t.parentNode===n)&&f(t,e)||o&&t===n)return t}while(t!==n&&(t=g(t)))}return null}var m,v=/\s+/g;function k(t,e,n){var o;t&&e&&(t.classList?t.classList[n?"add":"remove"](e):(o=(" "+t.className+" ").replace(v," ").replace(" "+e+" "," "),t.className=(o+(n?" "+e:"")).replace(v," ")))}function R(t,e,n){var o=t&&t.style;if(o){if(void 0===n)return document.defaultView&&document.defaultView.getComputedStyle?n=document.defaultView.getComputedStyle(t,""):t.currentStyle&&(n=t.currentStyle),void 0===e?n:n[e];o[e=!(e in o||-1!==e.indexOf("webkit"))?"-webkit-"+e:e]=n+("string"==typeof n?"":"px")}}function b(t,e){var n="";if("string"==typeof t)n=t;else do{var o=R(t,"transform")}while(o&&"none"!==o&&(n=o+" "+n),!e&&(t=t.parentNode));var i=window.DOMMatrix||window.WebKitCSSMatrix||window.CSSMatrix||window.MSCSSMatrix;return i&&new i(n)}function D(t,e,n){if(t){var o=t.getElementsByTagName(e),i=0,r=o.length;if(n)for(;i<r;i++)n(o[i],i);return o}return[]}function O(){var t=document.scrollingElement;return t||document.documentElement}function X(t,e,n,o,i){if(t.getBoundingClientRect||t===window){var r,a,l,s,c,u,d=t!==window&&t.parentNode&&t!==O()?(a=(r=t.getBoundingClientRect()).top,l=r.left,s=r.bottom,c=r.right,u=r.height,r.width):(l=a=0,s=window.innerHeight,c=window.innerWidth,u=window.innerHeight,window.innerWidth);if((e||n)&&t!==window&&(i=i||t.parentNode,!y))do{if(i&&i.getBoundingClientRect&&("none"!==R(i,"transform")||n&&"static"!==R(i,"position"))){var h=i.getBoundingClientRect();a-=h.top+parseInt(R(i,"border-top-width")),l-=h.left+parseInt(R(i,"border-left-width")),s=a+r.height,c=l+r.width;break}}while(i=i.parentNode);return o&&t!==window&&(o=(e=b(i||t))&&e.a,t=e&&e.d,e&&(s=(a/=t)+(u/=t),c=(l/=o)+(d/=o))),{top:a,left:l,bottom:s,right:c,width:d,height:u}}}function Y(t,e,n){for(var o=M(t,!0),i=X(t)[e];o;){var r=X(o)[n];if(!("top"===n||"left"===n?r<=i:i<=r))return o;if(o===O())break;o=M(o,!1)}return!1}function B(t,e,n,o){for(var i=0,r=0,a=t.children;r<a.length;){if("none"!==a[r].style.display&&a[r]!==jt.ghost&&(o||a[r]!==jt.dragged)&&P(a[r],n.draggable,t,!1)){if(i===e)return a[r];i++}r++}return null}function F(t,e){for(var n=t.lastElementChild;n&&(n===jt.ghost||"none"===R(n,"display")||e&&!f(n,e));)n=n.previousElementSibling;return n||null}function j(t,e){var n=0;if(!t||!t.parentNode)return-1;for(;t=t.previousElementSibling;)"TEMPLATE"===t.nodeName.toUpperCase()||t===jt.clone||e&&!f(t,e)||n++;return n}function E(t){var e=0,n=0,o=O();if(t)do{var i=b(t),r=i.a,i=i.d}while(e+=t.scrollLeft*r,n+=t.scrollTop*i,t!==o&&(t=t.parentNode));return[e,n]}function M(t,e){if(!t||!t.getBoundingClientRect)return O();var n=t,o=!1;do{if(n.clientWidth<n.scrollWidth||n.clientHeight<n.scrollHeight){var i=R(n);if(n.clientWidth<n.scrollWidth&&("auto"==i.overflowX||"scroll"==i.overflowX)||n.clientHeight<n.scrollHeight&&("auto"==i.overflowY||"scroll"==i.overflowY)){if(!n.getBoundingClientRect||n===document.body)return O();if(o||e)return n;o=!0}}}while(n=n.parentNode);return O()}function S(t,e){return Math.round(t.top)===Math.round(e.top)&&Math.round(t.left)===Math.round(e.left)&&Math.round(t.height)===Math.round(e.height)&&Math.round(t.width)===Math.round(e.width)}function _(e,n){return function(){var t;m||(1===(t=arguments).length?e.call(this,t[0]):e.apply(this,t),m=setTimeout(function(){m=void 0},n))}}function H(t,e,n){t.scrollLeft+=e,t.scrollTop+=n}function C(t){var e=window.Polymer,n=window.jQuery||window.Zepto;return e&&e.dom?e.dom(t).cloneNode(!0):n?n(t).clone(!0)[0]:t.cloneNode(!0)}function T(t,e){R(t,"position","absolute"),R(t,"top",e.top),R(t,"left",e.left),R(t,"width",e.width),R(t,"height",e.height)}function x(t){R(t,"position",""),R(t,"top",""),R(t,"left",""),R(t,"width",""),R(t,"height","")}function L(n,o,i){var r={};return Array.from(n.children).forEach(function(t){var e;P(t,o.draggable,n,!1)&&!t.animated&&t!==i&&(e=X(t),r.left=Math.min(null!==(t=r.left)&&void 0!==t?t:1/0,e.left),r.top=Math.min(null!==(t=r.top)&&void 0!==t?t:1/0,e.top),r.right=Math.max(null!==(t=r.right)&&void 0!==t?t:-1/0,e.right),r.bottom=Math.max(null!==(t=r.bottom)&&void 0!==t?t:-1/0,e.bottom))}),r.width=r.right-r.left,r.height=r.bottom-r.top,r.x=r.left,r.y=r.top,r}var K="Sortable"+(new Date).getTime();function A(){var e,o=[];return{captureAnimationState:function(){o=[],this.options.animation&&[].slice.call(this.el.children).forEach(function(t){var e,n;"none"!==R(t,"display")&&t!==jt.ghost&&(o.push({target:t,rect:X(t)}),e=I({},o[o.length-1].rect),!t.thisAnimationDuration||(n=b(t,!0))&&(e.top-=n.f,e.left-=n.e),t.fromRect=e)})},addAnimationState:function(t){o.push(t)},removeAnimationState:function(t){o.splice(function(t,e){for(var n in t)if(t.hasOwnProperty(n))for(var o in e)if(e.hasOwnProperty(o)&&e[o]===t[n][o])return Number(n);return-1}(o,{target:t}),1)},animateAll:function(t){var c=this;if(!this.options.animation)return clearTimeout(e),void("function"==typeof t&&t());var u=!1,d=0;o.forEach(function(t){var e=0,n=t.target,o=n.fromRect,i=X(n),r=n.prevFromRect,a=n.prevToRect,l=t.rect,s=b(n,!0);s&&(i.top-=s.f,i.left-=s.e),n.toRect=i,n.thisAnimationDuration&&S(r,i)&&!S(o,i)&&(l.top-i.top)/(l.left-i.left)==(o.top-i.top)/(o.left-i.left)&&(t=l,s=r,r=a,a=c.options,e=Math.sqrt(Math.pow(s.top-t.top,2)+Math.pow(s.left-t.left,2))/Math.sqrt(Math.pow(s.top-r.top,2)+Math.pow(s.left-r.left,2))*a.animation),S(i,o)||(n.prevFromRect=o,n.prevToRect=i,e=e||c.options.animation,c.animate(n,l,i,e)),e&&(u=!0,d=Math.max(d,e),clearTimeout(n.animationResetTimer),n.animationResetTimer=setTimeout(function(){n.animationTime=0,n.prevFromRect=null,n.fromRect=null,n.prevToRect=null,n.thisAnimationDuration=null},e),n.thisAnimationDuration=e)}),clearTimeout(e),u?e=setTimeout(function(){"function"==typeof t&&t()},d):"function"==typeof t&&t(),o=[]},animate:function(t,e,n,o){var i,r;o&&(R(t,"transition",""),R(t,"transform",""),i=(r=b(this.el))&&r.a,r=r&&r.d,i=(e.left-n.left)/(i||1),r=(e.top-n.top)/(r||1),t.animatingX=!!i,t.animatingY=!!r,R(t,"transform","translate3d("+i+"px,"+r+"px,0)"),this.forRepaintDummy=t.offsetWidth,R(t,"transition","transform "+o+"ms"+(this.options.easing?" "+this.options.easing:"")),R(t,"transform","translate3d(0,0,0)"),"number"==typeof t.animated&&clearTimeout(t.animated),t.animated=setTimeout(function(){R(t,"transition",""),R(t,"transform",""),t.animated=!1,t.animatingX=!1,t.animatingY=!1},o))}}}var N=[],W={initializeByDefault:!0},z={mount:function(e){for(var t in W)!W.hasOwnProperty(t)||t in e||(e[t]=W[t]);N.forEach(function(t){if(t.pluginName===e.pluginName)throw"Sortable: Cannot mount plugin ".concat(e.pluginName," more than once")}),N.push(e)},pluginEvent:function(e,n,o){var t=this;this.eventCanceled=!1,o.cancel=function(){t.eventCanceled=!0};var i=e+"Global";N.forEach(function(t){n[t.pluginName]&&(n[t.pluginName][i]&&n[t.pluginName][i](I({sortable:n},o)),n.options[t.pluginName]&&n[t.pluginName][e]&&n[t.pluginName][e](I({sortable:n},o)))})},initializePlugins:function(n,o,i,t){for(var e in N.forEach(function(t){var e=t.pluginName;(n.options[e]||t.initializeByDefault)&&((t=new t(n,o,n.options)).sortable=n,t.options=n.options,n[e]=t,a(i,t.defaults))}),n.options){var r;n.options.hasOwnProperty(e)&&(void 0!==(r=this.modifyOption(n,e,n.options[e]))&&(n.options[e]=r))}},getEventProperties:function(e,n){var o={};return N.forEach(function(t){"function"==typeof t.eventProperties&&a(o,t.eventProperties.call(n[t.pluginName],e))}),o},modifyOption:function(e,n,o){var i;return N.forEach(function(t){e[t.pluginName]&&t.optionListeners&&"function"==typeof t.optionListeners[n]&&(i=t.optionListeners[n].call(e[t.pluginName],o))}),i}};function G(t){var e=t.sortable,n=t.rootEl,o=t.name,i=t.targetEl,r=t.cloneEl,a=t.toEl,l=t.fromEl,s=t.oldIndex,c=t.newIndex,u=t.oldDraggableIndex,d=t.newDraggableIndex,h=t.originalEvent,p=t.putSortable,f=t.extraEventProperties;if(e=e||n&&n[K]){var g,m=e.options,t="on"+o.charAt(0).toUpperCase()+o.substr(1);!window.CustomEvent||y||w?(g=document.createEvent("Event")).initEvent(o,!0,!0):g=new CustomEvent(o,{bubbles:!0,cancelable:!0}),g.to=a||n,g.from=l||n,g.item=i||n,g.clone=r,g.oldIndex=s,g.newIndex=c,g.oldDraggableIndex=u,g.newDraggableIndex=d,g.originalEvent=h,g.pullMode=p?p.lastPutMode:void 0;var v,b=I(I({},f),z.getEventProperties(o,e));for(v in b)g[v]=b[v];n&&n.dispatchEvent(g),m[t]&&m[t].call(e,g)}}function U(t,e){var n=(o=2<arguments.length&&void 0!==arguments[2]?arguments[2]:{}).evt,o=i(o,q);z.pluginEvent.bind(jt)(t,e,I({dragEl:Z,parentEl:$,ghostEl:Q,rootEl:J,nextEl:tt,lastDownEl:et,cloneEl:nt,cloneHidden:ot,dragStarted:mt,putSortable:ct,activeSortable:jt.active,originalEvent:n,oldIndex:it,oldDraggableIndex:at,newIndex:rt,newDraggableIndex:lt,hideGhostForTarget:Xt,unhideGhostForTarget:Yt,cloneNowHidden:function(){ot=!0},cloneNowShown:function(){ot=!1},dispatchSortableEvent:function(t){V({sortable:e,name:t,originalEvent:n})}},o))}var q=["evt"];function V(t){G(I({putSortable:ct,cloneEl:nt,targetEl:Z,rootEl:J,oldIndex:it,oldDraggableIndex:at,newIndex:rt,newDraggableIndex:lt},t))}var Z,$,Q,J,tt,et,nt,ot,it,rt,at,lt,st,ct,ut,dt,ht,pt,ft,gt,mt,vt,bt,yt,wt,Dt=!1,Et=!1,St=[],_t=!1,Ct=!1,Tt=[],xt=!1,Ot=[],Mt="undefined"!=typeof document,At=c,Nt=w||y?"cssFloat":"float",It=Mt&&!n&&!c&&"draggable"in document.createElement("div"),Pt=function(){if(Mt){if(y)return!1;var t=document.createElement("x");return t.style.cssText="pointer-events:auto","auto"===t.style.pointerEvents}}(),kt=function(t,e){var n=R(t),o=parseInt(n.width)-parseInt(n.paddingLeft)-parseInt(n.paddingRight)-parseInt(n.borderLeftWidth)-parseInt(n.borderRightWidth),i=B(t,0,e),r=B(t,1,e),a=i&&R(i),l=r&&R(r),s=a&&parseInt(a.marginLeft)+parseInt(a.marginRight)+X(i).width,t=l&&parseInt(l.marginLeft)+parseInt(l.marginRight)+X(r).width;if("flex"===n.display)return"column"===n.flexDirection||"column-reverse"===n.flexDirection?"vertical":"horizontal";if("grid"===n.display)return n.gridTemplateColumns.split(" ").length<=1?"vertical":"horizontal";if(i&&a.float&&"none"!==a.float){e="left"===a.float?"left":"right";return!r||"both"!==l.clear&&l.clear!==e?"horizontal":"vertical"}return i&&("block"===a.display||"flex"===a.display||"table"===a.display||"grid"===a.display||o<=s&&"none"===n[Nt]||r&&"none"===n[Nt]&&o<s+t)?"vertical":"horizontal"},Rt=function(t){function l(r,a){return function(t,e,n,o){var i=t.options.group.name&&e.options.group.name&&t.options.group.name===e.options.group.name;if(null==r&&(a||i))return!0;if(null==r||!1===r)return!1;if(a&&"clone"===r)return r;if("function"==typeof r)return l(r(t,e,n,o),a)(t,e,n,o);e=(a?t:e).options.group.name;return!0===r||"string"==typeof r&&r===e||r.join&&-1<r.indexOf(e)}}var e={},n=t.group;n&&"object"==o(n)||(n={name:n}),e.name=n.name,e.checkPull=l(n.pull,!0),e.checkPut=l(n.put),e.revertClone=n.revertClone,t.group=e},Xt=function(){!Pt&&Q&&R(Q,"display","none")},Yt=function(){!Pt&&Q&&R(Q,"display","")};Mt&&!n&&document.addEventListener("click",function(t){if(Et)return t.preventDefault(),t.stopPropagation&&t.stopPropagation(),t.stopImmediatePropagation&&t.stopImmediatePropagation(),Et=!1},!0);function Bt(t){if(Z){t=t.touches?t.touches[0]:t;var e=(i=t.clientX,r=t.clientY,St.some(function(t){var e=t[K].options.emptyInsertThreshold;if(e&&!F(t)){var n=X(t),o=i>=n.left-e&&i<=n.right+e,e=r>=n.top-e&&r<=n.bottom+e;return o&&e?a=t:void 0}}),a);if(e){var n,o={};for(n in t)t.hasOwnProperty(n)&&(o[n]=t[n]);o.target=o.rootEl=e,o.preventDefault=void 0,o.stopPropagation=void 0,e[K]._onDragOver(o)}}var i,r,a}function Ft(t){Z&&Z.parentNode[K]._isOutsideThisEl(t.target)}function jt(t,e){if(!t||!t.nodeType||1!==t.nodeType)throw"Sortable: `el` must be an HTMLElement, not ".concat({}.toString.call(t));this.el=t,this.options=e=a({},e),t[K]=this;var n,o,i={group:null,sort:!0,disabled:!1,store:null,handle:null,draggable:/^[uo]l$/i.test(t.nodeName)?">li":">*",swapThreshold:1,invertSwap:!1,invertedSwapThreshold:null,removeCloneOnHide:!0,direction:function(){return kt(t,this.options)},ghostClass:"sortable-ghost",chosenClass:"sortable-chosen",dragClass:"sortable-drag",ignore:"a, img",filter:null,preventOnFilter:!0,animation:0,easing:null,setData:function(t,e){t.setData("Text",e.textContent)},dropBubble:!1,dragoverBubble:!1,dataIdAttr:"data-id",delay:0,delayOnTouchOnly:!1,touchStartThreshold:(Number.parseInt?Number:window).parseInt(window.devicePixelRatio,10)||1,forceFallback:!1,fallbackClass:"sortable-fallback",fallbackOnBody:!1,fallbackTolerance:0,fallbackOffset:{x:0,y:0},supportPointer:!1!==jt.supportPointer&&"PointerEvent"in window&&(!u||c),emptyInsertThreshold:5};for(n in z.initializePlugins(this,t,i),i)n in e||(e[n]=i[n]);for(o in Rt(e),this)"_"===o.charAt(0)&&"function"==typeof this[o]&&(this[o]=this[o].bind(this));this.nativeDraggable=!e.forceFallback&&It,this.nativeDraggable&&(this.options.touchStartThreshold=1),e.supportPointer?h(t,"pointerdown",this._onTapStart):(h(t,"mousedown",this._onTapStart),h(t,"touchstart",this._onTapStart)),this.nativeDraggable&&(h(t,"dragover",this),h(t,"dragenter",this)),St.push(this.el),e.store&&e.store.get&&this.sort(e.store.get(this)||[]),a(this,A())}function Ht(t,e,n,o,i,r,a,l){var s,c,u=t[K],d=u.options.onMove;return!window.CustomEvent||y||w?(s=document.createEvent("Event")).initEvent("move",!0,!0):s=new CustomEvent("move",{bubbles:!0,cancelable:!0}),s.to=e,s.from=t,s.dragged=n,s.draggedRect=o,s.related=i||e,s.relatedRect=r||X(e),s.willInsertAfter=l,s.originalEvent=a,t.dispatchEvent(s),c=d?d.call(u,s,a):c}function Lt(t){t.draggable=!1}function Kt(){xt=!1}function Wt(t){return setTimeout(t,0)}function zt(t){return clearTimeout(t)}jt.prototype={constructor:jt,_isOutsideThisEl:function(t){this.el.contains(t)||t===this.el||(vt=null)},_getDirection:function(t,e){return"function"==typeof this.options.direction?this.options.direction.call(this,t,e,Z):this.options.direction},_onTapStart:function(e){if(e.cancelable){var n=this,o=this.el,t=this.options,i=t.preventOnFilter,r=e.type,a=e.touches&&e.touches[0]||e.pointerType&&"touch"===e.pointerType&&e,l=(a||e).target,s=e.target.shadowRoot&&(e.path&&e.path[0]||e.composedPath&&e.composedPath()[0])||l,c=t.filter;if(!function(t){Ot.length=0;var e=t.getElementsByTagName("input"),n=e.length;for(;n--;){var o=e[n];o.checked&&Ot.push(o)}}(o),!Z&&!(/mousedown|pointerdown/.test(r)&&0!==e.button||t.disabled)&&!s.isContentEditable&&(this.nativeDraggable||!u||!l||"SELECT"!==l.tagName.toUpperCase())&&!((l=P(l,t.draggable,o,!1))&&l.animated||et===l)){if(it=j(l),at=j(l,t.draggable),"function"==typeof c){if(c.call(this,e,l,this))return V({sortable:n,rootEl:s,name:"filter",targetEl:l,toEl:o,fromEl:o}),U("filter",n,{evt:e}),void(i&&e.preventDefault())}else if(c=c&&c.split(",").some(function(t){if(t=P(s,t.trim(),o,!1))return V({sortable:n,rootEl:t,name:"filter",targetEl:l,fromEl:o,toEl:o}),U("filter",n,{evt:e}),!0}))return void(i&&e.preventDefault());t.handle&&!P(s,t.handle,o,!1)||this._prepareDragStart(e,a,l)}}},_prepareDragStart:function(t,e,n){var o,i=this,r=i.el,a=i.options,l=r.ownerDocument;n&&!Z&&n.parentNode===r&&(o=X(n),J=r,$=(Z=n).parentNode,tt=Z.nextSibling,et=n,st=a.group,ut={target:jt.dragged=Z,clientX:(e||t).clientX,clientY:(e||t).clientY},ft=ut.clientX-o.left,gt=ut.clientY-o.top,this._lastX=(e||t).clientX,this._lastY=(e||t).clientY,Z.style["will-change"]="all",o=function(){U("delayEnded",i,{evt:t}),jt.eventCanceled?i._onDrop():(i._disableDelayedDragEvents(),!s&&i.nativeDraggable&&(Z.draggable=!0),i._triggerDragStart(t,e),V({sortable:i,name:"choose",originalEvent:t}),k(Z,a.chosenClass,!0))},a.ignore.split(",").forEach(function(t){D(Z,t.trim(),Lt)}),h(l,"dragover",Bt),h(l,"mousemove",Bt),h(l,"touchmove",Bt),a.supportPointer?(h(l,"pointerup",i._onDrop),this.nativeDraggable||h(l,"pointercancel",i._onDrop)):(h(l,"mouseup",i._onDrop),h(l,"touchend",i._onDrop),h(l,"touchcancel",i._onDrop)),s&&this.nativeDraggable&&(this.options.touchStartThreshold=4,Z.draggable=!0),U("delayStart",this,{evt:t}),!a.delay||a.delayOnTouchOnly&&!e||this.nativeDraggable&&(w||y)?o():jt.eventCanceled?this._onDrop():(a.supportPointer?(h(l,"pointerup",i._disableDelayedDrag),h(l,"pointercancel",i._disableDelayedDrag)):(h(l,"mouseup",i._disableDelayedDrag),h(l,"touchend",i._disableDelayedDrag),h(l,"touchcancel",i._disableDelayedDrag)),h(l,"mousemove",i._delayedDragTouchMoveHandler),h(l,"touchmove",i._delayedDragTouchMoveHandler),a.supportPointer&&h(l,"pointermove",i._delayedDragTouchMoveHandler),i._dragStartTimer=setTimeout(o,a.delay)))},_delayedDragTouchMoveHandler:function(t){t=t.touches?t.touches[0]:t;Math.max(Math.abs(t.clientX-this._lastX),Math.abs(t.clientY-this._lastY))>=Math.floor(this.options.touchStartThreshold/(this.nativeDraggable&&window.devicePixelRatio||1))&&this._disableDelayedDrag()},_disableDelayedDrag:function(){Z&&Lt(Z),clearTimeout(this._dragStartTimer),this._disableDelayedDragEvents()},_disableDelayedDragEvents:function(){var t=this.el.ownerDocument;p(t,"mouseup",this._disableDelayedDrag),p(t,"touchend",this._disableDelayedDrag),p(t,"touchcancel",this._disableDelayedDrag),p(t,"pointerup",this._disableDelayedDrag),p(t,"pointercancel",this._disableDelayedDrag),p(t,"mousemove",this._delayedDragTouchMoveHandler),p(t,"touchmove",this._delayedDragTouchMoveHandler),p(t,"pointermove",this._delayedDragTouchMoveHandler)},_triggerDragStart:function(t,e){e=e||"touch"==t.pointerType&&t,!this.nativeDraggable||e?this.options.supportPointer?h(document,"pointermove",this._onTouchMove):h(document,e?"touchmove":"mousemove",this._onTouchMove):(h(Z,"dragend",this),h(J,"dragstart",this._onDragStart));try{document.selection?Wt(function(){document.selection.empty()}):window.getSelection().removeAllRanges()}catch(t){}},_dragStarted:function(t,e){var n;Dt=!1,J&&Z?(U("dragStarted",this,{evt:e}),this.nativeDraggable&&h(document,"dragover",Ft),n=this.options,t||k(Z,n.dragClass,!1),k(Z,n.ghostClass,!0),jt.active=this,t&&this._appendGhost(),V({sortable:this,name:"start",originalEvent:e})):this._nulling()},_emulateDragOver:function(){if(dt){this._lastX=dt.clientX,this._lastY=dt.clientY,Xt();for(var t=document.elementFromPoint(dt.clientX,dt.clientY),e=t;t&&t.shadowRoot&&(t=t.shadowRoot.elementFromPoint(dt.clientX,dt.clientY))!==e;)e=t;if(Z.parentNode[K]._isOutsideThisEl(t),e)do{if(e[K])if(e[K]._onDragOver({clientX:dt.clientX,clientY:dt.clientY,target:t,rootEl:e})&&!this.options.dragoverBubble)break}while(e=g(t=e));Yt()}},_onTouchMove:function(t){if(ut){var e=this.options,n=e.fallbackTolerance,o=e.fallbackOffset,i=t.touches?t.touches[0]:t,r=Q&&b(Q,!0),a=Q&&r&&r.a,l=Q&&r&&r.d,e=At&&wt&&E(wt),a=(i.clientX-ut.clientX+o.x)/(a||1)+(e?e[0]-Tt[0]:0)/(a||1),l=(i.clientY-ut.clientY+o.y)/(l||1)+(e?e[1]-Tt[1]:0)/(l||1);if(!jt.active&&!Dt){if(n&&Math.max(Math.abs(i.clientX-this._lastX),Math.abs(i.clientY-this._lastY))<n)return;this._onDragStart(t,!0)}Q&&(r?(r.e+=a-(ht||0),r.f+=l-(pt||0)):r={a:1,b:0,c:0,d:1,e:a,f:l},r="matrix(".concat(r.a,",").concat(r.b,",").concat(r.c,",").concat(r.d,",").concat(r.e,",").concat(r.f,")"),R(Q,"webkitTransform",r),R(Q,"mozTransform",r),R(Q,"msTransform",r),R(Q,"transform",r),ht=a,pt=l,dt=i),t.cancelable&&t.preventDefault()}},_appendGhost:function(){if(!Q){var t=this.options.fallbackOnBody?document.body:J,e=X(Z,!0,At,!0,t),n=this.options;if(At){for(wt=t;"static"===R(wt,"position")&&"none"===R(wt,"transform")&&wt!==document;)wt=wt.parentNode;wt!==document.body&&wt!==document.documentElement?(wt===document&&(wt=O()),e.top+=wt.scrollTop,e.left+=wt.scrollLeft):wt=O(),Tt=E(wt)}k(Q=Z.cloneNode(!0),n.ghostClass,!1),k(Q,n.fallbackClass,!0),k(Q,n.dragClass,!0),R(Q,"transition",""),R(Q,"transform",""),R(Q,"box-sizing","border-box"),R(Q,"margin",0),R(Q,"top",e.top),R(Q,"left",e.left),R(Q,"width",e.width),R(Q,"height",e.height),R(Q,"opacity","0.8"),R(Q,"position",At?"absolute":"fixed"),R(Q,"zIndex","100000"),R(Q,"pointerEvents","none"),jt.ghost=Q,t.appendChild(Q),R(Q,"transform-origin",ft/parseInt(Q.style.width)*100+"% "+gt/parseInt(Q.style.height)*100+"%")}},_onDragStart:function(t,e){var n=this,o=t.dataTransfer,i=n.options;U("dragStart",this,{evt:t}),jt.eventCanceled?this._onDrop():(U("setupClone",this),jt.eventCanceled||((nt=C(Z)).removeAttribute("id"),nt.draggable=!1,nt.style["will-change"]="",this._hideClone(),k(nt,this.options.chosenClass,!1),jt.clone=nt),n.cloneId=Wt(function(){U("clone",n),jt.eventCanceled||(n.options.removeCloneOnHide||J.insertBefore(nt,Z),n._hideClone(),V({sortable:n,name:"clone"}))}),e||k(Z,i.dragClass,!0),e?(Et=!0,n._loopId=setInterval(n._emulateDragOver,50)):(p(document,"mouseup",n._onDrop),p(document,"touchend",n._onDrop),p(document,"touchcancel",n._onDrop),o&&(o.effectAllowed="move",i.setData&&i.setData.call(n,o,Z)),h(document,"drop",n),R(Z,"transform","translateZ(0)")),Dt=!0,n._dragStartId=Wt(n._dragStarted.bind(n,e,t)),h(document,"selectstart",n),mt=!0,window.getSelection().removeAllRanges(),u&&R(document.body,"user-select","none"))},_onDragOver:function(n){var o,i,r,t,e,a=this.el,l=n.target,s=this.options,c=s.group,u=jt.active,d=st===c,h=s.sort,p=ct||u,f=this,g=!1;if(!xt){if(void 0!==n.preventDefault&&n.cancelable&&n.preventDefault(),l=P(l,s.draggable,a,!0),O("dragOver"),jt.eventCanceled)return g;if(Z.contains(n.target)||l.animated&&l.animatingX&&l.animatingY||f._ignoreWhileAnimating===l)return A(!1);if(Et=!1,u&&!s.disabled&&(d?h||(i=$!==J):ct===this||(this.lastPutMode=st.checkPull(this,u,Z,n))&&c.checkPut(this,u,Z,n))){if(r="vertical"===this._getDirection(n,l),o=X(Z),O("dragOverValid"),jt.eventCanceled)return g;if(i)return $=J,M(),this._hideClone(),O("revert"),jt.eventCanceled||(tt?J.insertBefore(Z,tt):J.appendChild(Z)),A(!0);var m=F(a,s.draggable);if(m&&(S=n,c=r,x=X(F((E=this).el,E.options.draggable)),E=L(E.el,E.options,Q),!(c?S.clientX>E.right+10||S.clientY>x.bottom&&S.clientX>x.left:S.clientY>E.bottom+10||S.clientX>x.right&&S.clientY>x.top)||m.animated)){if(m&&(t=n,e=r,C=X(B((_=this).el,0,_.options,!0)),_=L(_.el,_.options,Q),e?t.clientX<_.left-10||t.clientY<C.top&&t.clientX<C.right:t.clientY<_.top-10||t.clientY<C.bottom&&t.clientX<C.left)){var v=B(a,0,s,!0);if(v===Z)return A(!1);if(D=X(l=v),!1!==Ht(J,a,Z,o,l,D,n,!1))return M(),a.insertBefore(Z,v),$=a,N(),A(!0)}else if(l.parentNode===a){var b,y,w,D=X(l),E=Z.parentNode!==a,S=(S=Z.animated&&Z.toRect||o,x=l.animated&&l.toRect||D,_=(e=r)?S.left:S.top,t=e?S.right:S.bottom,C=e?S.width:S.height,v=e?x.left:x.top,S=e?x.right:x.bottom,x=e?x.width:x.height,!(_===v||t===S||_+C/2===v+x/2)),_=r?"top":"left",C=Y(l,"top","top")||Y(Z,"top","top"),v=C?C.scrollTop:void 0;if(vt!==l&&(y=D[_],_t=!1,Ct=!S&&s.invertSwap||E),0!==(b=function(t,e,n,o,i,r,a,l){var s=o?t.clientY:t.clientX,c=o?n.height:n.width,t=o?n.top:n.left,o=o?n.bottom:n.right,n=!1;if(!a)if(l&&yt<c*i){if(_t=!_t&&(1===bt?t+c*r/2<s:s<o-c*r/2)?!0:_t)n=!0;else if(1===bt?s<t+yt:o-yt<s)return-bt}else if(t+c*(1-i)/2<s&&s<o-c*(1-i)/2)return function(t){return j(Z)<j(t)?1:-1}(e);if((n=n||a)&&(s<t+c*r/2||o-c*r/2<s))return t+c/2<s?1:-1;return 0}(n,l,D,r,S?1:s.swapThreshold,null==s.invertedSwapThreshold?s.swapThreshold:s.invertedSwapThreshold,Ct,vt===l)))for(var T=j(Z);(w=$.children[T-=b])&&("none"===R(w,"display")||w===Q););if(0===b||w===l)return A(!1);bt=b;var x=(vt=l).nextElementSibling,E=!1,S=Ht(J,a,Z,o,l,D,n,E=1===b);if(!1!==S)return 1!==S&&-1!==S||(E=1===S),xt=!0,setTimeout(Kt,30),M(),E&&!x?a.appendChild(Z):l.parentNode.insertBefore(Z,E?x:l),C&&H(C,0,v-C.scrollTop),$=Z.parentNode,void 0===y||Ct||(yt=Math.abs(y-X(l)[_])),N(),A(!0)}}else{if(m===Z)return A(!1);if((l=m&&a===n.target?m:l)&&(D=X(l)),!1!==Ht(J,a,Z,o,l,D,n,!!l))return M(),m&&m.nextSibling?a.insertBefore(Z,m.nextSibling):a.appendChild(Z),$=a,N(),A(!0)}if(a.contains(Z))return A(!1)}return!1}function O(t,e){U(t,f,I({evt:n,isOwner:d,axis:r?"vertical":"horizontal",revert:i,dragRect:o,targetRect:D,canSort:h,fromSortable:p,target:l,completed:A,onMove:function(t,e){return Ht(J,a,Z,o,t,X(t),n,e)},changed:N},e))}function M(){O("dragOverAnimationCapture"),f.captureAnimationState(),f!==p&&p.captureAnimationState()}function A(t){return O("dragOverCompleted",{insertion:t}),t&&(d?u._hideClone():u._showClone(f),f!==p&&(k(Z,(ct||u).options.ghostClass,!1),k(Z,s.ghostClass,!0)),ct!==f&&f!==jt.active?ct=f:f===jt.active&&ct&&(ct=null),p===f&&(f._ignoreWhileAnimating=l),f.animateAll(function(){O("dragOverAnimationComplete"),f._ignoreWhileAnimating=null}),f!==p&&(p.animateAll(),p._ignoreWhileAnimating=null)),(l===Z&&!Z.animated||l===a&&!l.animated)&&(vt=null),s.dragoverBubble||n.rootEl||l===document||(Z.parentNode[K]._isOutsideThisEl(n.target),t||Bt(n)),!s.dragoverBubble&&n.stopPropagation&&n.stopPropagation(),g=!0}function N(){rt=j(Z),lt=j(Z,s.draggable),V({sortable:f,name:"change",toEl:a,newIndex:rt,newDraggableIndex:lt,originalEvent:n})}},_ignoreWhileAnimating:null,_offMoveEvents:function(){p(document,"mousemove",this._onTouchMove),p(document,"touchmove",this._onTouchMove),p(document,"pointermove",this._onTouchMove),p(document,"dragover",Bt),p(document,"mousemove",Bt),p(document,"touchmove",Bt)},_offUpEvents:function(){var t=this.el.ownerDocument;p(t,"mouseup",this._onDrop),p(t,"touchend",this._onDrop),p(t,"pointerup",this._onDrop),p(t,"pointercancel",this._onDrop),p(t,"touchcancel",this._onDrop),p(document,"selectstart",this)},_onDrop:function(t){var e=this.el,n=this.options;rt=j(Z),lt=j(Z,n.draggable),U("drop",this,{evt:t}),$=Z&&Z.parentNode,rt=j(Z),lt=j(Z,n.draggable),jt.eventCanceled||(_t=Ct=Dt=!1,clearInterval(this._loopId),clearTimeout(this._dragStartTimer),zt(this.cloneId),zt(this._dragStartId),this.nativeDraggable&&(p(document,"drop",this),p(e,"dragstart",this._onDragStart)),this._offMoveEvents(),this._offUpEvents(),u&&R(document.body,"user-select",""),R(Z,"transform",""),t&&(mt&&(t.cancelable&&t.preventDefault(),n.dropBubble||t.stopPropagation()),Q&&Q.parentNode&&Q.parentNode.removeChild(Q),(J===$||ct&&"clone"!==ct.lastPutMode)&&nt&&nt.parentNode&&nt.parentNode.removeChild(nt),Z&&(this.nativeDraggable&&p(Z,"dragend",this),Lt(Z),Z.style["will-change"]="",mt&&!Dt&&k(Z,(ct||this).options.ghostClass,!1),k(Z,this.options.chosenClass,!1),V({sortable:this,name:"unchoose",toEl:$,newIndex:null,newDraggableIndex:null,originalEvent:t}),J!==$?(0<=rt&&(V({rootEl:$,name:"add",toEl:$,fromEl:J,originalEvent:t}),V({sortable:this,name:"remove",toEl:$,originalEvent:t}),V({rootEl:$,name:"sort",toEl:$,fromEl:J,originalEvent:t}),V({sortable:this,name:"sort",toEl:$,originalEvent:t})),ct&&ct.save()):rt!==it&&0<=rt&&(V({sortable:this,name:"update",toEl:$,originalEvent:t}),V({sortable:this,name:"sort",toEl:$,originalEvent:t})),jt.active&&(null!=rt&&-1!==rt||(rt=it,lt=at),V({sortable:this,name:"end",toEl:$,originalEvent:t}),this.save())))),this._nulling()},_nulling:function(){U("nulling",this),J=Z=$=Q=tt=nt=et=ot=ut=dt=mt=rt=lt=it=at=vt=bt=ct=st=jt.dragged=jt.ghost=jt.clone=jt.active=null,Ot.forEach(function(t){t.checked=!0}),Ot.length=ht=pt=0},handleEvent:function(t){switch(t.type){case"drop":case"dragend":this._onDrop(t);break;case"dragenter":case"dragover":Z&&(this._onDragOver(t),function(t){t.dataTransfer&&(t.dataTransfer.dropEffect="move");t.cancelable&&t.preventDefault()}(t));break;case"selectstart":t.preventDefault()}},toArray:function(){for(var t,e=[],n=this.el.children,o=0,i=n.length,r=this.options;o<i;o++)P(t=n[o],r.draggable,this.el,!1)&&e.push(t.getAttribute(r.dataIdAttr)||function(t){var e=t.tagName+t.className+t.src+t.href+t.textContent,n=e.length,o=0;for(;n--;)o+=e.charCodeAt(n);return o.toString(36)}(t));return e},sort:function(t,e){var n={},o=this.el;this.toArray().forEach(function(t,e){e=o.children[e];P(e,this.options.draggable,o,!1)&&(n[t]=e)},this),e&&this.captureAnimationState(),t.forEach(function(t){n[t]&&(o.removeChild(n[t]),o.appendChild(n[t]))}),e&&this.animateAll()},save:function(){var t=this.options.store;t&&t.set&&t.set(this)},closest:function(t,e){return P(t,e||this.options.draggable,this.el,!1)},option:function(t,e){var n=this.options;if(void 0===e)return n[t];var o=z.modifyOption(this,t,e);n[t]=void 0!==o?o:e,"group"===t&&Rt(n)},destroy:function(){U("destroy",this);var t=this.el;t[K]=null,p(t,"mousedown",this._onTapStart),p(t,"touchstart",this._onTapStart),p(t,"pointerdown",this._onTapStart),this.nativeDraggable&&(p(t,"dragover",this),p(t,"dragenter",this)),Array.prototype.forEach.call(t.querySelectorAll("[draggable]"),function(t){t.removeAttribute("draggable")}),this._onDrop(),this._disableDelayedDragEvents(),St.splice(St.indexOf(this.el),1),this.el=t=null},_hideClone:function(){ot||(U("hideClone",this),jt.eventCanceled||(R(nt,"display","none"),this.options.removeCloneOnHide&&nt.parentNode&&nt.parentNode.removeChild(nt),ot=!0))},_showClone:function(t){"clone"===t.lastPutMode?ot&&(U("showClone",this),jt.eventCanceled||(Z.parentNode!=J||this.options.group.revertClone?tt?J.insertBefore(nt,tt):J.appendChild(nt):J.insertBefore(nt,Z),this.options.group.revertClone&&this.animate(Z,nt),R(nt,"display",""),ot=!1)):this._hideClone()}},Mt&&h(document,"touchmove",function(t){(jt.active||Dt)&&t.cancelable&&t.preventDefault()}),jt.utils={on:h,off:p,css:R,find:D,is:function(t,e){return!!P(t,e,t,!1)},extend:function(t,e){if(t&&e)for(var n in e)e.hasOwnProperty(n)&&(t[n]=e[n]);return t},throttle:_,closest:P,toggleClass:k,clone:C,index:j,nextTick:Wt,cancelNextTick:zt,detectDirection:kt,getChild:B,expando:K},jt.get=function(t){return t[K]},jt.mount=function(){for(var t=arguments.length,e=new Array(t),n=0;n<t;n++)e[n]=arguments[n];(e=e[0].constructor===Array?e[0]:e).forEach(function(t){if(!t.prototype||!t.prototype.constructor)throw"Sortable: Mounted plugin must be a constructor function, not ".concat({}.toString.call(t));t.utils&&(jt.utils=I(I({},jt.utils),t.utils)),z.mount(t)})},jt.create=function(t,e){return new jt(t,e)};var Gt,Ut,qt,Vt,Zt,$t,Qt=[],Jt=!(jt.version="1.15.6");function te(){Qt.forEach(function(t){clearInterval(t.pid)}),Qt=[]}function ee(){clearInterval($t)}var ne,oe=_(function(n,t,e,o){if(t.scroll){var i,r=(n.touches?n.touches[0]:n).clientX,a=(n.touches?n.touches[0]:n).clientY,l=t.scrollSensitivity,s=t.scrollSpeed,c=O(),u=!1;Ut!==e&&(Ut=e,te(),Gt=t.scroll,i=t.scrollFn,!0===Gt&&(Gt=M(e,!0)));var d=0,h=Gt;do{var p=h,f=X(p),g=f.top,m=f.bottom,v=f.left,b=f.right,y=f.width,w=f.height,D=void 0,E=void 0,S=p.scrollWidth,_=p.scrollHeight,C=R(p),T=p.scrollLeft,f=p.scrollTop,E=p===c?(D=y<S&&("auto"===C.overflowX||"scroll"===C.overflowX||"visible"===C.overflowX),w<_&&("auto"===C.overflowY||"scroll"===C.overflowY||"visible"===C.overflowY)):(D=y<S&&("auto"===C.overflowX||"scroll"===C.overflowX),w<_&&("auto"===C.overflowY||"scroll"===C.overflowY)),T=D&&(Math.abs(b-r)<=l&&T+y<S)-(Math.abs(v-r)<=l&&!!T),f=E&&(Math.abs(m-a)<=l&&f+w<_)-(Math.abs(g-a)<=l&&!!f);if(!Qt[d])for(var x=0;x<=d;x++)Qt[x]||(Qt[x]={});Qt[d].vx==T&&Qt[d].vy==f&&Qt[d].el===p||(Qt[d].el=p,Qt[d].vx=T,Qt[d].vy=f,clearInterval(Qt[d].pid),0==T&&0==f||(u=!0,Qt[d].pid=setInterval(function(){o&&0===this.layer&&jt.active._onTouchMove(Zt);var t=Qt[this.layer].vy?Qt[this.layer].vy*s:0,e=Qt[this.layer].vx?Qt[this.layer].vx*s:0;"function"==typeof i&&"continue"!==i.call(jt.dragged.parentNode[K],e,t,n,Zt,Qt[this.layer].el)||H(Qt[this.layer].el,e,t)}.bind({layer:d}),24))),d++}while(t.bubbleScroll&&h!==c&&(h=M(h,!1)));Jt=u}},30),n=function(t){var e=t.originalEvent,n=t.putSortable,o=t.dragEl,i=t.activeSortable,r=t.dispatchSortableEvent,a=t.hideGhostForTarget,t=t.unhideGhostForTarget;e&&(i=n||i,a(),e=e.changedTouches&&e.changedTouches.length?e.changedTouches[0]:e,e=document.elementFromPoint(e.clientX,e.clientY),t(),i&&!i.el.contains(e)&&(r("spill"),this.onSpill({dragEl:o,putSortable:n})))};function ie(){}function re(){}ie.prototype={startIndex:null,dragStart:function(t){t=t.oldDraggableIndex;this.startIndex=t},onSpill:function(t){var e=t.dragEl,n=t.putSortable;this.sortable.captureAnimationState(),n&&n.captureAnimationState();t=B(this.sortable.el,this.startIndex,this.options);t?this.sortable.el.insertBefore(e,t):this.sortable.el.appendChild(e),this.sortable.animateAll(),n&&n.animateAll()},drop:n},a(ie,{pluginName:"revertOnSpill"}),re.prototype={onSpill:function(t){var e=t.dragEl,t=t.putSortable||this.sortable;t.captureAnimationState(),e.parentNode&&e.parentNode.removeChild(e),t.animateAll()},drop:n},a(re,{pluginName:"removeOnSpill"});var ae,le,se,ce,ue,de=[],he=[],pe=!1,fe=!1,ge=!1;function me(n,o){he.forEach(function(t,e){e=o.children[t.sortableIndex+(n?Number(e):0)];e?o.insertBefore(t,e):o.appendChild(t)})}function ve(){de.forEach(function(t){t!==se&&t.parentNode&&t.parentNode.removeChild(t)})}return jt.mount(new function(){function t(){for(var t in this.defaults={scroll:!0,forceAutoScrollFallback:!1,scrollSensitivity:30,scrollSpeed:10,bubbleScroll:!0},this)"_"===t.charAt(0)&&"function"==typeof this[t]&&(this[t]=this[t].bind(this))}return t.prototype={dragStarted:function(t){t=t.originalEvent;this.sortable.nativeDraggable?h(document,"dragover",this._handleAutoScroll):this.options.supportPointer?h(document,"pointermove",this._handleFallbackAutoScroll):t.touches?h(document,"touchmove",this._handleFallbackAutoScroll):h(document,"mousemove",this._handleFallbackAutoScroll)},dragOverCompleted:function(t){t=t.originalEvent;this.options.dragOverBubble||t.rootEl||this._handleAutoScroll(t)},drop:function(){this.sortable.nativeDraggable?p(document,"dragover",this._handleAutoScroll):(p(document,"pointermove",this._handleFallbackAutoScroll),p(document,"touchmove",this._handleFallbackAutoScroll),p(document,"mousemove",this._handleFallbackAutoScroll)),ee(),te(),clearTimeout(m),m=void 0},nulling:function(){Zt=Ut=Gt=Jt=$t=qt=Vt=null,Qt.length=0},_handleFallbackAutoScroll:function(t){this._handleAutoScroll(t,!0)},_handleAutoScroll:function(e,n){var o,i=this,r=(e.touches?e.touches[0]:e).clientX,a=(e.touches?e.touches[0]:e).clientY,t=document.elementFromPoint(r,a);Zt=e,n||this.options.forceAutoScrollFallback||w||y||u?(oe(e,this.options,t,n),o=M(t,!0),!Jt||$t&&r===qt&&a===Vt||($t&&ee(),$t=setInterval(function(){var t=M(document.elementFromPoint(r,a),!0);t!==o&&(o=t,te()),oe(e,i.options,t,n)},10),qt=r,Vt=a)):this.options.bubbleScroll&&M(t,!0)!==O()?oe(e,this.options,M(t,!1),!1):te()}},a(t,{pluginName:"scroll",initializeByDefault:!0})}),jt.mount(re,ie),jt.mount(new function(){function t(){this.defaults={swapClass:"sortable-swap-highlight"}}return t.prototype={dragStart:function(t){t=t.dragEl;ne=t},dragOverValid:function(t){var e=t.completed,n=t.target,o=t.onMove,i=t.activeSortable,r=t.changed,a=t.cancel;i.options.swap&&(t=this.sortable.el,i=this.options,n&&n!==t&&(t=ne,ne=!1!==o(n)?(k(n,i.swapClass,!0),n):null,t&&t!==ne&&k(t,i.swapClass,!1)),r(),e(!0),a())},drop:function(t){var e,n,o=t.activeSortable,i=t.putSortable,r=t.dragEl,a=i||this.sortable,l=this.options;ne&&k(ne,l.swapClass,!1),ne&&(l.swap||i&&i.options.swap)&&r!==ne&&(a.captureAnimationState(),a!==o&&o.captureAnimationState(),n=ne,t=(e=r).parentNode,l=n.parentNode,t&&l&&!t.isEqualNode(n)&&!l.isEqualNode(e)&&(i=j(e),r=j(n),t.isEqualNode(l)&&i<r&&r++,t.insertBefore(n,t.children[i]),l.insertBefore(e,l.children[r])),a.animateAll(),a!==o&&o.animateAll())},nulling:function(){ne=null}},a(t,{pluginName:"swap",eventProperties:function(){return{swapItem:ne}}})}),jt.mount(new function(){function t(o){for(var t in this)"_"===t.charAt(0)&&"function"==typeof this[t]&&(this[t]=this[t].bind(this));o.options.avoidImplicitDeselect||(o.options.supportPointer?h(document,"pointerup",this._deselectMultiDrag):(h(document,"mouseup",this._deselectMultiDrag),h(document,"touchend",this._deselectMultiDrag))),h(document,"keydown",this._checkKeyDown),h(document,"keyup",this._checkKeyUp),this.defaults={selectedClass:"sortable-selected",multiDragKey:null,avoidImplicitDeselect:!1,setData:function(t,e){var n="";de.length&&le===o?de.forEach(function(t,e){n+=(e?", ":"")+t.textContent}):n=e.textContent,t.setData("Text",n)}}}return t.prototype={multiDragKeyDown:!1,isMultiDrag:!1,delayStartGlobal:function(t){t=t.dragEl;se=t},delayEnded:function(){this.isMultiDrag=~de.indexOf(se)},setupClone:function(t){var e=t.sortable,t=t.cancel;if(this.isMultiDrag){for(var n=0;n<de.length;n++)he.push(C(de[n])),he[n].sortableIndex=de[n].sortableIndex,he[n].draggable=!1,he[n].style["will-change"]="",k(he[n],this.options.selectedClass,!1),de[n]===se&&k(he[n],this.options.chosenClass,!1);e._hideClone(),t()}},clone:function(t){var e=t.sortable,n=t.rootEl,o=t.dispatchSortableEvent,t=t.cancel;this.isMultiDrag&&(this.options.removeCloneOnHide||de.length&&le===e&&(me(!0,n),o("clone"),t()))},showClone:function(t){var e=t.cloneNowShown,n=t.rootEl,t=t.cancel;this.isMultiDrag&&(me(!1,n),he.forEach(function(t){R(t,"display","")}),e(),ue=!1,t())},hideClone:function(t){var e=this,n=(t.sortable,t.cloneNowHidden),t=t.cancel;this.isMultiDrag&&(he.forEach(function(t){R(t,"display","none"),e.options.removeCloneOnHide&&t.parentNode&&t.parentNode.removeChild(t)}),n(),ue=!0,t())},dragStartGlobal:function(t){t.sortable;!this.isMultiDrag&&le&&le.multiDrag._deselectMultiDrag(),de.forEach(function(t){t.sortableIndex=j(t)}),de=de.sort(function(t,e){return t.sortableIndex-e.sortableIndex}),ge=!0},dragStarted:function(t){var e,n=this,t=t.sortable;this.isMultiDrag&&(this.options.sort&&(t.captureAnimationState(),this.options.animation&&(de.forEach(function(t){t!==se&&R(t,"position","absolute")}),e=X(se,!1,!0,!0),de.forEach(function(t){t!==se&&T(t,e)}),pe=fe=!0)),t.animateAll(function(){pe=fe=!1,n.options.animation&&de.forEach(function(t){x(t)}),n.options.sort&&ve()}))},dragOver:function(t){var e=t.target,n=t.completed,t=t.cancel;fe&&~de.indexOf(e)&&(n(!1),t())},revert:function(t){var n,o,e=t.fromSortable,i=t.rootEl,r=t.sortable,a=t.dragRect;1<de.length&&(de.forEach(function(t){r.addAnimationState({target:t,rect:fe?X(t):a}),x(t),t.fromRect=a,e.removeAnimationState(t)}),fe=!1,n=!this.options.removeCloneOnHide,o=i,de.forEach(function(t,e){e=o.children[t.sortableIndex+(n?Number(e):0)];e?o.insertBefore(t,e):o.appendChild(t)}))},dragOverCompleted:function(t){var e,n=t.sortable,o=t.isOwner,i=t.insertion,r=t.activeSortable,a=t.parentEl,l=t.putSortable,t=this.options;i&&(o&&r._hideClone(),pe=!1,t.animation&&1<de.length&&(fe||!o&&!r.options.sort&&!l)&&(e=X(se,!1,!0,!0),de.forEach(function(t){t!==se&&(T(t,e),a.appendChild(t))}),fe=!0),o||(fe||ve(),1<de.length?(o=ue,r._showClone(n),r.options.animation&&!ue&&o&&he.forEach(function(t){r.addAnimationState({target:t,rect:ce}),t.fromRect=ce,t.thisAnimationDuration=null})):r._showClone(n)))},dragOverAnimationCapture:function(t){var e=t.dragRect,n=t.isOwner,t=t.activeSortable;de.forEach(function(t){t.thisAnimationDuration=null}),t.options.animation&&!n&&t.multiDrag.isMultiDrag&&(ce=a({},e),e=b(se,!0),ce.top-=e.f,ce.left-=e.e)},dragOverAnimationComplete:function(){fe&&(fe=!1,ve())},drop:function(t){var o,i,r,a,n,e,l,s=t.originalEvent,c=t.rootEl,u=t.parentEl,d=t.sortable,h=t.dispatchSortableEvent,p=t.oldIndex,t=t.putSortable,f=t||this.sortable;s&&(o=this.options,i=u.children,ge||(o.multiDragKey&&!this.multiDragKeyDown&&this._deselectMultiDrag(),k(se,o.selectedClass,!~de.indexOf(se)),~de.indexOf(se)?(de.splice(de.indexOf(se),1),ae=null,G({sortable:d,rootEl:c,name:"deselect",targetEl:se,originalEvent:s})):(de.push(se),G({sortable:d,rootEl:c,name:"select",targetEl:se,originalEvent:s}),s.shiftKey&&ae&&d.el.contains(ae)?(r=j(ae),a=j(se),~r&&~a&&r!==a&&function(){for(var e,t=r<a?(e=r,a):(e=a,r+1),n=o.filter;e<t;e++)~de.indexOf(i[e])||P(i[e],o.draggable,u,!1)&&(n&&("function"==typeof n?n.call(d,s,i[e],d):n.split(",").some(function(t){return P(i[e],t.trim(),u,!1)}))||(k(i[e],o.selectedClass,!0),de.push(i[e]),G({sortable:d,rootEl:c,name:"select",targetEl:i[e],originalEvent:s})))}()):ae=se,le=f)),ge&&this.isMultiDrag&&(fe=!1,(u[K].options.sort||u!==c)&&1<de.length&&(n=X(se),e=j(se,":not(."+this.options.selectedClass+")"),!pe&&o.animation&&(se.thisAnimationDuration=null),f.captureAnimationState(),pe||(o.animation&&(se.fromRect=n,de.forEach(function(t){var e;t.thisAnimationDuration=null,t!==se&&(e=fe?X(t):n,t.fromRect=e,f.addAnimationState({target:t,rect:e}))})),ve(),de.forEach(function(t){i[e]?u.insertBefore(t,i[e]):u.appendChild(t),e++}),p===j(se)&&(l=!1,de.forEach(function(t){t.sortableIndex!==j(t)&&(l=!0)}),l&&(h("update"),h("sort")))),de.forEach(function(t){x(t)}),f.animateAll()),le=f),(c===u||t&&"clone"!==t.lastPutMode)&&he.forEach(function(t){t.parentNode&&t.parentNode.removeChild(t)}))},nullingGlobal:function(){this.isMultiDrag=ge=!1,he.length=0},destroyGlobal:function(){this._deselectMultiDrag(),p(document,"pointerup",this._deselectMultiDrag),p(document,"mouseup",this._deselectMultiDrag),p(document,"touchend",this._deselectMultiDrag),p(document,"keydown",this._checkKeyDown),p(document,"keyup",this._checkKeyUp)},_deselectMultiDrag:function(t){if(!(void 0!==ge&&ge||le!==this.sortable||t&&P(t.target,this.options.draggable,this.sortable.el,!1)||t&&0!==t.button))for(;de.length;){var e=de[0];k(e,this.options.selectedClass,!1),de.shift(),G({sortable:this.sortable,rootEl:this.sortable.el,name:"deselect",targetEl:e,originalEvent:t})}},_checkKeyDown:function(t){t.key===this.options.multiDragKey&&(this.multiDragKeyDown=!0)},_checkKeyUp:function(t){t.key===this.options.multiDragKey&&(this.multiDragKeyDown=!1)}},a(t,{pluginName:"multiDrag",utils:{select:function(t){var e=t.parentNode[K];e&&e.options.multiDrag&&!~de.indexOf(t)&&(le&&le!==e&&(le.multiDrag._deselectMultiDrag(),le=e),k(t,e.options.selectedClass,!0),de.push(t))},deselect:function(t){var e=t.parentNode[K],n=de.indexOf(t);e&&e.options.multiDrag&&~n&&(k(t,e.options.selectedClass,!1),de.splice(n,1))}},eventProperties:function(){var n=this,o=[],i=[];return de.forEach(function(t){var e;o.push({multiDragElement:t,index:t.sortableIndex}),e=fe&&t!==se?-1:fe?j(t,":not(."+n.options.selectedClass+")"):j(t),i.push({multiDragElement:t,index:e})}),{items:r(de),clones:[].concat(he),oldIndicies:o,newIndicies:i}},optionListeners:{multiDragKey:function(t){return"ctrl"===(t=t.toLowerCase())?t="Control":1<t.length&&(t=t.charAt(0).toUpperCase()+t.substr(1)),t}}})}),jt});</script>
+<script>
+(() => {
+'use strict';
+
+/* ================= Utilities ================= */
+const LS_DATA = 'spacebar.data.v1', LS_UI = 'spacebar.ui.v1', LS_OLD = 'throughline.data.v1';
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const uid = p => p + Date.now().toString(36).slice(-4) + Math.random().toString(36).slice(2, 7);
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate());
+const isYmd = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s);
+const pd = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+const today = () => ymd(new Date());
+const addDays = (s, n) => { const d = pd(s); d.setDate(d.getDate() + n); return ymd(d); };
+const diffDays = (a, b) => Math.round((pd(a) - pd(b)) / 864e5);
+const mondayOf = s => addDays(s, -((pd(s).getDay() + 6) % 7));
+const MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const WD = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+const fmtDM = s => { const d = pd(s); return d.getDate() + ' ' + MON[d.getMonth()]; };
+const fmtWDM = s => { const d = pd(s); return WD[d.getDay()] + ' ' + d.getDate() + ' ' + MON[d.getMonth()]; };
+const parseJSON = s => { try { return JSON.parse(s); } catch (e) { return null; } };
+const clampInt = (v, lo, hi, def) => { v = parseInt(v, 10); return Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : def; };
+const trunc = (s, n) => s.length > n ? s.slice(0, n - 1) + '…' : s;
+const plural = (n, w) => n + ' ' + w + (n === 1 ? '' : 's');
+const MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const reduceMotion = window.matchMedia && matchMedia('(prefers-reduced-motion: reduce)').matches;
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); return true; } catch (e) { return false; } }
+};
+
+/* ================= Icons ================= */
+const sv = (p, vb = 16) => `<svg class="i" viewBox="0 0 ${vb} ${vb}" aria-hidden="true">${p}</svg>`;
+const I = {
+  star: sv('<path d="M8 1.9l1.8 3.7 4.1.6-3 2.9.7 4.1L8 11.3l-3.6 1.9.7-4.1-3-2.9 4.1-.6z"/>'),
+  hash: sv('<path d="M6.3 2.5 5.1 13.5M10.9 2.5 9.7 13.5M2.9 5.8h10.5M2.6 10.2h10.5"/>'),
+  target: sv('<circle cx="8" cy="8" r="5.7"/><circle class="dt" cx="8" cy="8" r="2.1"/>'),
+  check: sv('<path d="M3.8 8.4l2.7 2.6 5.7-6"/>'),
+  plus: sv('<path d="M8 3.2v9.6M3.2 8h9.6"/>'),
+  more: sv('<circle cx="3.6" cy="8" r=".8"/><circle cx="8" cy="8" r=".8"/><circle cx="12.4" cy="8" r=".8"/>'),
+  chevR: sv('<path d="M6.2 4l4 4-4 4"/>'),
+  chevUp: sv('<path d="M4 9.8l4-4 4 4"/>'),
+  chevDn: sv('<path d="M4 6.2l4 4 4-4"/>'),
+  x: sv('<path d="M4.6 4.6l6.8 6.8M11.4 4.6l-6.8 6.8"/>'),
+  flag: sv('<path d="M3.7 14V2.7M3.7 3.1h8.1L10.2 6l1.6 2.9H3.7"/>'),
+  bolt: sv('<path d="M8.8 1.8 3.6 9h4.1l-.6 5.2L12.4 7H8.2z"/>'),
+  search: sv('<circle cx="7.2" cy="7.2" r="4.4"/><path d="M10.5 10.5 13.6 13.6"/>'),
+  gear: sv('<path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/>', 24),
+  keys: sv('<rect x="1.8" y="4" width="12.4" height="8.4" rx="1.8"/><path d="M4.4 6.7h.1M6.9 6.7h.1M9.4 6.7h.1M11.8 6.7h.1M5 9.7h6"/>'),
+  eye: sv('<path d="M1.6 8s2.4-4.5 6.4-4.5S14.4 8 14.4 8s-2.4 4.5-6.4 4.5S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/>'),
+  eyeOff: sv('<path d="M1.6 8s2.4-4.5 6.4-4.5S14.4 8 14.4 8s-2.4 4.5-6.4 4.5S1.6 8 1.6 8z"/><circle cx="8" cy="8" r="2"/><path d="M2.6 2.6l10.8 10.8"/>'),
+  cal: sv('<rect x="2.5" y="3.2" width="11" height="10.3" rx="2.2"/><path d="M2.5 6.6h11M5.6 1.8v2.6M10.4 1.8v2.6"/>'),
+  pencil: sv('<path d="M10.8 2.6l2.6 2.6-7.8 7.8-3.2.6.6-3.2z"/>'),
+  trash: sv('<path d="M3 4.5h10M6.4 4.5V3h3.2v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/>'),
+  arrow: sv('<path d="M3 8h9.6M8.8 4.2 12.6 8l-3.8 3.8"/>'),
+  expandAll: sv('<path d="M4.5 6 8 2.6 11.5 6M4.5 10 8 13.4 11.5 10"/>'),
+  collapseAll: sv('<path d="M4.5 2.6 8 6l3.5-3.4M4.5 13.4 8 10l3.5 3.4"/>')
+};
+$('#tb-gear').innerHTML = I.gear;
+$('#tb-gear svg').style.strokeWidth = '2';
+$('#tb-search-ic').innerHTML = I.search;
+$('#tb-keys').innerHTML = I.keys;
+
+/* ================= Data ================= */
+const STATUS = { on: 'On track', risk: 'At risk', off: 'Off track' };
+const README = 'Spacebar workspace file. The open Spacebar page reloads this file about 2 seconds after it changes, so it can be edited directly (by you, Claude or a script). Rules: keep ids unique and references valid; dates are YYYY-MM-DD; arrays are in display order. stages: board columns {id, name, hint}. modes: the kind of energy a task needs {id, name, hint}. objectives: the Weekly plan, goals for the current cycle {id, title, status: on|risk|off}. initiatives: {id, name, stage: stage id, priority: true|false (at most settings.priorityCap), link: Slack URL, milestones: [{id, date, label, done}]}. tasks: next steps {id, title, ini: initiative id, mode: mode id or null, obj: objective id or null, link: Slack URL, done: true|false, doneAt: date or null}. daily: the Daily plan, ordered ids of open tasks, at most settings.dailyCap. notes: the Scratchpad, a plain text string. settings.cycleStart and settings.cycleDays define the objective cycle. Set updatedAt to the current ISO time when you edit.';
+
+function defaultStages() {
+  return [
+    { id: 'shape', name: 'Shape', hint: 'Framing the problem, specs, getting alignment' },
+    { id: 'build', name: 'Build', hint: 'Being designed or built, decisions in flight' },
+    { id: 'land', name: 'Land', hint: 'Launching, rolling out, reporting back' }
+  ];
+}
+function defaultModes() {
+  return [
+    { id: 'think', name: 'Think', hint: 'Open-ended. Needs focused time to work out' },
+    { id: 'do', name: 'Do', hint: 'Clear and well defined. Just execute' },
+    { id: 'chase', name: 'Chase', hint: 'Follow-ups, nudges, meetings to set up' }
+  ];
+}
+function emptyData() {
+  return {
+    app: 'spacebar', version: 1, updatedAt: new Date().toISOString(),
+    settings: { name: 'Spacebar', priorityCap: 5, dailyCap: 10, objectiveCap: 3, cycleDays: 7, cycleStart: mondayOf(today()), theme: 'system' },
+    stages: defaultStages(), modes: defaultModes(), objectives: [], initiatives: [], tasks: [], daily: [], notes: '', sample: false
+  };
+}
+
+function sampleData() {
+  const D = n => addDays(today(), n);
+  const SL = 'https://example.slack.com/archives/';
+  const d = emptyData();
+  d.sample = true;
+  d.settings.cycleStart = mondayOf(today());
+  d.objectives = [
+    { id: 'o1', title: 'Get the airport wayfinding PRD signed off by Rider leads', status: 'risk' },
+    { id: 'o2', title: 'Launch Reserve v2 beta to 10% of riders in 3 cities', status: 'on' },
+    { id: 'o3', title: 'Make the call on scaling the Eats cross-sell to 50%', status: 'off' }
+  ];
+  d.initiatives = [
+    { id: 'i1', name: 'Airport pickup wayfinding', stage: 'shape', priority: true, link: SL + 'C0AIRPORT', milestones: [
+      { id: 'm1', date: D(6), label: 'PRD review with Rider leads', done: false },
+      { id: 'm2', date: D(13), label: 'Design crit', done: false } ] },
+    { id: 'i2', name: 'Exec ask: Mumbai surge complaints', stage: 'shape', priority: false, link: SL + 'C0SURGE', milestones: [
+      { id: 'm3', date: D(1), label: 'Read-out to VP Rider', done: false } ] },
+    { id: 'i3', name: 'Uber One family sharing', stage: 'shape', priority: false, link: '', milestones: [
+      { id: 'm4', date: D(20), label: 'Pricing review', done: false } ] },
+    { id: 'i4', name: 'Reserve v2 (scheduled rides)', stage: 'build', priority: true, link: SL + 'C0RESERVE', milestones: [
+      { id: 'm5', date: D(-2), label: 'Code freeze', done: true },
+      { id: 'm6', date: D(4), label: 'Beta: 3 cities at 10%', done: false },
+      { id: 'm7', date: D(18), label: 'Full rollout', done: false } ] },
+    { id: 'i5', name: 'Split fare redesign', stage: 'build', priority: false, link: SL + 'C0SPLIT', milestones: [
+      { id: 'm8', date: D(-1), label: 'Design handoff to eng', done: false } ] },
+    { id: 'i6', name: 'Ad hoc requests', stage: 'build', priority: false, link: '', milestones: [] },
+    { id: 'i7', name: 'Eats cross-sell on trip end', stage: 'land', priority: true, link: SL + 'C0CROSSSELL', milestones: [
+      { id: 'm9', date: D(2), label: 'Decision: scale to 50%', done: false },
+      { id: 'm10', date: D(16), label: '100% rollout', done: false } ] },
+    { id: 'i8', name: 'Q4 business review: Rider wins', stage: 'land', priority: false, link: '', milestones: [
+      { id: 'm11', date: D(5), label: 'Slides due to Product Ops', done: false } ] }
+  ];
+  const t = (id, ini, title, mode, x = {}) => Object.assign({ id, ini, title, mode: mode === 'prep' ? 'do' : mode, obj: null, link: '', done: false, doneAt: null }, x);
+  d.tasks = [
+    t('t1', 'i1', 'Write PRD v1: problem, success metrics, scope', 'think', { obj: 'o1' }),
+    t('t2', 'i1', 'Chase Maps team for terminal-level pickup zones', 'chase', { obj: 'o1', link: SL + 'C0AIRPORT/p1731300000000100' }),
+    t('t3', 'i1', 'Prep design crit: three wayfinding concepts', 'prep', { obj: 'o1' }),
+    t('t4', 'i1', 'Decide v1 scope: AR arrows or annotated photos', 'think', { obj: 'o1' }),
+    t('t5', 'i1', 'Pull pickup-failure rate for the top 10 airports', 'do', { obj: 'o1', done: true, doneAt: D(-2) }),
+    t('t6', 'i2', 'Pull 4 weeks of complaint volume and surge multipliers', 'do'),
+    t('t7', 'i2', 'Draft a one-page read for the VP', 'think'),
+    t('t8', 'i3', 'Size the opportunity from shared payment profiles', 'think'),
+    t('t9', 'i3', 'Ask Finance for churn by membership tier', 'chase'),
+    t('t10', 'i4', 'Confirm driver-matching fallback with Marketplace eng', 'chase', { obj: 'o2', link: SL + 'C0RESERVE/p1731300000000200' }),
+    t('t11', 'i4', 'Work through flight-delay rescheduling edge cases', 'think', { obj: 'o2' }),
+    t('t12', 'i4', 'Sign off reminder notification copy', 'do', { obj: 'o2' }),
+    t('t13', 'i4', 'Prep go/no-go review for the beta', 'prep', { obj: 'o2' }),
+    t('t14', 'i4', 'QA pass on the Android release candidate', 'do', { obj: 'o2', done: true, doneAt: D(-1) }),
+    t('t15', 'i5', 'Answer eng questions on partial-payment states', 'chase'),
+    t('t16', 'i5', 'Update flows for when a co-rider declines', 'do'),
+    t('t17', 'i6', 'Send Legal the EU data-retention answer', 'do'),
+    t('t18', 'i6', "Review the intern's pickup-pin analysis", 'do'),
+    t('t19', 'i7', 'Get the A/B readout from Data Science', 'chase', { obj: 'o3' }),
+    t('t20', 'i7', 'Set the guardrail: one cross-sell card per day', 'think', { obj: 'o3' }),
+    t('t21', 'i7', 'Prep the 50% rollout note for Rider and Eats leads', 'prep', { obj: 'o3' }),
+    t('t22', 'i8', 'Draft three win slides: Reserve, Wallet, Safety', 'prep'),
+    t('t23', 'i8', 'Get final Wallet top-up adoption numbers', 'chase')
+  ];
+  d.daily = ['t19', 't1', 't10', 't6', 't2', 't11', 't13', 't20', 't22'];
+  d.notes = 'Raise in Thursday 1:1: do we hold the cross-sell decision for the readout or ship at 25% first?\nAsk Maps whether terminal pickup zones exist for BOM and DEL.';
+  return normalize(d);
+}
+
+/* Accepts anything that looks like workspace data (including hand or Claude edits) and repairs it. */
+function normalize(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('Workspace data must be a JSON object');
+  const d = emptyData();
+  const arr = x => Array.isArray(x) ? x.filter(v => v && typeof v === 'object') : [];
+  const str = (v, def = '') => typeof v === 'string' ? v : (v == null ? def : String(v));
+  const idf = (set, v, p) => { let id = str(v).trim() || uid(p); while (set.has(id)) id = uid(p); set.add(id); return id; };
+  const st = raw.settings && typeof raw.settings === 'object' ? raw.settings : {};
+  let name = str(st.name).trim().slice(0, 60);
+  if (!name || name === 'Throughline') name = 'Spacebar';
+  d.settings = {
+    name,
+    priorityCap: clampInt(st.priorityCap, 1, 50, 5),
+    dailyCap: clampInt(st.dailyCap != null ? st.dailyCap : st.focusCap, 1, 50, 10),
+    objectiveCap: clampInt(st.objectiveCap, 1, 10, 3),
+    cycleDays: clampInt(st.cycleDays, 1, 120, 7),
+    cycleStart: isYmd(st.cycleStart) ? st.cycleStart : mondayOf(today()),
+    theme: ['system', 'light', 'dark'].includes(st.theme) ? st.theme : 'system'
+  };
+  d.updatedAt = typeof raw.updatedAt === 'string' ? raw.updatedAt : d.updatedAt;
+  d.sample = raw.sample === true;
+  const sIds = new Set();
+  const stages = arr(raw.stages).map(s => { const id = idf(sIds, s.id, 's'); return { id, name: str(s.name).trim() || id, hint: str(s.hint) }; });
+  if (stages.length) d.stages = stages;
+  if (Array.isArray(raw.modes)) {
+    const mIds = new Set();
+    d.modes = arr(raw.modes).map(m => { const id = idf(mIds, m.id, 'm'); return { id, name: str(m.name).trim() || id, hint: str(m.hint) }; });
+  }
+  const oIds = new Set();
+  d.objectives = arr(raw.objectives).map(o => ({ id: idf(oIds, o.id, 'o'), title: str(o.title), status: STATUS[o.status] ? o.status : 'on' }));
+  const stageIds = new Set(d.stages.map(s => s.id));
+  const iIds = new Set();
+  d.initiatives = arr(raw.initiatives).map(i => {
+    const msIds = new Set();
+    return {
+      id: idf(iIds, i.id, 'i'), name: str(i.name), stage: stageIds.has(str(i.stage)) ? str(i.stage) : d.stages[0].id,
+      priority: i.priority === true, link: str(i.link).trim(),
+      milestones: arr(i.milestones).map(m => ({ id: idf(msIds, m.id, 'ms'), date: isYmd(m.date) ? m.date : '', label: str(m.label), done: m.done === true }))
+    };
+  });
+  const modeIds = new Set(d.modes.map(m => m.id));
+  const tIds = new Set();
+  let unfiled = null;
+  d.tasks = arr(raw.tasks).map(t => {
+    let ini = str(t.ini);
+    if (!iIds.has(ini)) {
+      if (!unfiled) { unfiled = { id: idf(iIds, 'unfiled', 'i'), name: 'Unfiled', stage: d.stages[0].id, priority: false, link: '', milestones: [] }; d.initiatives.push(unfiled); }
+      ini = unfiled.id;
+    }
+    const done = t.done === true;
+    return {
+      id: idf(tIds, t.id, 't'), title: str(t.title), ini,
+      mode: modeIds.has(str(t.mode)) ? str(t.mode) : null,
+      obj: oIds.has(str(t.obj)) ? str(t.obj) : null,
+      link: str(t.link).trim(), done, doneAt: done ? (isYmd(t.doneAt) ? t.doneAt : today()) : null
+    };
+  });
+  const open = new Set(d.tasks.filter(t => !t.done).map(t => t.id));
+  const src = Array.isArray(raw.daily) ? raw.daily : Array.isArray(raw.focus) ? raw.focus : arr(raw.tasks).filter(t => t.daily === true || t.focus === true).map(t => t.id);
+  d.daily = [...new Set(src.map(String))].filter(id => open.has(id));
+  d.notes = str(raw.notes).slice(0, 200000);
+  return d;
+}
+
+/* ================= State ================= */
+let S;
+{
+  const raw = parseJSON(store.get(LS_DATA)) || parseJSON(store.get(LS_OLD));
+  try { S = raw ? normalize(raw) : null; } catch (e) { S = null; }
+  if (!S) S = sampleData();
+  if (S.sample && S.modes.some(m => m.id === 'prep' && m.name === 'Prep')) {
+    S.modes = S.modes.filter(m => m.id !== 'prep');
+    S.tasks.forEach(t => { if (t.mode === 'prep') t.mode = 'do'; });
+  }
+  store.set(LS_DATA, JSON.stringify(S));
+}
+const UI = Object.assign({ plan: 'min', planW: 440, planBlur: true, priorityOnly: false, fold: {}, objOpen: {}, showDone: {} }, parseJSON(store.get(LS_UI)) || {});
+if (!['min', 'daily', 'weekly', 'notes'].includes(UI.plan)) UI.plan = 'min';
+['fold', 'objOpen', 'showDone'].forEach(k => { if (!UI[k] || typeof UI[k] !== 'object') UI[k] = {}; });
+const saveUI = () => store.set(LS_UI, JSON.stringify(UI));
+
+const hist = { past: [], future: [] };
+let sel = null, selFallback = null, query = '', editing = null, pendingNew = null, renderPending = false;
+let dragging = false, dragFromDaily = false, lastDragEnd = 0, firstRender = true, planStagger = false;
+const ptr = { x: 0, y: 0 };
+
+const getTask = id => S.tasks.find(t => t.id === id);
+const getIni = id => S.initiatives.find(i => i.id === id);
+const getObj = id => S.objectives.find(o => o.id === id);
+const getMode = id => S.modes.find(m => m.id === id);
+const inDaily = id => S.daily.includes(id);
+const objNum = id => S.objectives.findIndex(o => o.id === id) + 1;
+const prioCount = () => S.initiatives.filter(i => i.priority).length;
+const snapshot = () => JSON.stringify(S);
+const planOpen = () => UI.plan !== 'min';
+const boardLive = () => !planOpen() || !UI.planBlur;
+
+function pushHist(snap) { if (!snap) return; hist.past.push(snap); if (hist.past.length > 100) hist.past.shift(); hist.future = []; }
+function touch() { S.updatedAt = new Date().toISOString(); persist(); }
+let warnedStorage = false;
+function persistLocal() { if (!store.set(LS_DATA, JSON.stringify(S)) && !warnedStorage) { warnedStorage = true; toast('This browser is blocking storage, so changes will not survive a reload. Link a data file in Settings.'); } }
+function persist() { persistLocal(); scheduleFileWrite(); }
+function commit(fn, opts = {}) {
+  const before = snapshot();
+  if (fn() === false) return false;
+  pushHist(before); touch(); render(opts);
+  return true;
+}
+function undo() {
+  if (!hist.past.length) { toast('Nothing to undo'); return; }
+  hist.future.push(snapshot()); const nt = S.notes; S = normalize(JSON.parse(hist.past.pop())); S.notes = nt; touch(); render(); toast('Undone');
+}
+function redo() {
+  if (!hist.future.length) { toast('Nothing to redo'); return; }
+  hist.past.push(snapshot()); const nt = S.notes; S = normalize(JSON.parse(hist.future.pop())); S.notes = nt; touch(); render(); toast('Redone');
+}
+
+/* ================= Derived ================= */
+const q = () => query.trim().toLowerCase();
+function taskMatches(t) {
+  const s = q(); if (!s || !t.title) return true;
+  return t.title.toLowerCase().includes(s) || ((getIni(t.ini) || {}).name || '').toLowerCase().includes(s);
+}
+function iniVisible(i) {
+  if (UI.priorityOnly && !i.priority) return false;
+  const s = q(); if (!s) return true;
+  return i.name.toLowerCase().includes(s) || S.tasks.some(t => t.ini === i.id && !t.done && t.title.toLowerCase().includes(s));
+}
+function isFolded(i) {
+  if (q()) return false;
+  return Object.prototype.hasOwnProperty.call(UI.fold, i.id) ? !!UI.fold[i.id] : !i.priority;
+}
+function setFold(id, v) { UI.fold[id] = v; saveUI(); }
+function orderedOpen() {
+  const rank = new Map(S.initiatives.map((i, k) => [i.id, k]));
+  return S.tasks.map((t, k) => [t, k]).filter(([t]) => !t.done).sort((a, b) => (rank.get(a[0].ini) - rank.get(b[0].ini)) || (a[1] - b[1])).map(x => x[0]);
+}
+function nextMs(i) { return (i.milestones || []).filter(m => !m.done && isYmd(m.date)).sort((a, b) => a.date < b.date ? -1 : a.date > b.date ? 1 : 0)[0] || null; }
+function msWhen(m) {
+  const n = diffDays(m.date, today());
+  if (n < 0) return 'Overdue ' + (-n) + 'd';
+  if (n === 0) return 'Today';
+  if (n === 1) return 'Tomorrow';
+  if (n < 7) return WD[pd(m.date).getDay()];
+  return fmtDM(m.date);
+}
+function cycle() {
+  const len = S.settings.cycleDays, start = S.settings.cycleStart, end = addDays(start, len - 1), t = today();
+  return { len, start, end, day: diffDays(t, start) + 1, left: diffDays(end, t) };
+}
+const cycleLabel = () => ({ 7: 'Weekly', 14: 'Fortnightly', 28: 'Monthly' }[S.settings.cycleDays] || 'Cycle');
+const selCls = (k, id, z) => sel && sel.kind === k && sel.id === id && sel.z === z ? ' sel' : '';
+
+/* ================= Templates ================= */
+function marks(t, showDaily) {
+  return showDaily && inDaily(t.id) ? [`<span class="mk" data-tip="In your Daily plan">${I.target}</span>`] : [];
+}
+function taskCard(t) {
+  const d = inDaily(t.id), m = getMode(t.mode), o = t.obj ? getObj(t.obj) : null;
+  const mk = marks(t, true);
+  const meta = (m || o) ? `<div class="t-meta">${m ? `<button class="tok" data-act="mode" data-tip="${esc(m.hint || m.name)}">${esc(m.name)}</button>` : ''}${o ? `<button class="tok" data-act="obj" data-tip="${esc(o.title)}">Objective ${objNum(o.id)}</button>` : ''}</div>` : '';
+  return `<div class="task${mk.length ? ' m' + mk.length : ''}${selCls('task', t.id, 'board')}" data-nav data-kind="task" data-id="${esc(t.id)}" data-z="board" data-key="b-${esc(t.id)}">
+    <button class="check" data-act="toggleDone" data-tip="Complete (X)">${I.check}</button>
+    <div class="t-body"><div class="t-title" data-edit="taskTitle" data-ph="Describe the next step">${esc(t.title)}</div>${meta}</div>
+    ${mk.length ? `<div class="marks">${mk.join('')}</div>` : ''}
+    <div class="tools">
+      <button class="ic sm${d ? ' on' : ''}" data-act="daily" data-tip="${d ? 'Remove from Daily (D)' : 'Add to Daily (D)'}">${I.target}</button>
+      <button class="ic sm" data-act="mode" data-tip="Mode (M)">${I.bolt}</button>
+      <button class="ic sm" data-act="obj" data-tip="Objective (O)">${I.flag}</button>
+      ${t.link ? `<button class="ic sm" data-act="openLink" data-tip="Open Slack">${I.hash}</button>` : ''}
+      <button class="ic sm" data-act="taskMenu" data-tip="More ( . )">${I.more}</button>
+    </div>
+  </div>`;
+}
+function iniCard(i) {
+  const all = S.tasks.filter(t => t.ini === i.id);
+  const nameHit = q() && i.name.toLowerCase().includes(q());
+  const open = all.filter(t => !t.done && (nameHit || taskMatches(t)));
+  const done = all.filter(t => t.done);
+  const m = nextMs(i);
+  const fold = isFolded(i);
+  return `<div class="ini${i.priority ? ' prio' : ''}${fold ? ' folded' : ''}${selCls('ini', i.id, 'board')}" data-nav data-kind="ini" data-id="${esc(i.id)}" data-z="board" data-key="bi-${esc(i.id)}">
+    <div class="ini-top">
+      <div class="ini-head" data-act="collapse">
+        <span class="chev">${I.chevR}</span>
+        <div class="ini-name" data-edit="iniName" data-ph="Name this initiative">${esc(i.name)}</div>
+        ${i.priority ? `<span class="pstar" data-tip="Priority initiative">${I.star}</span>` : ''}
+        <div class="ini-acts">
+          ${i.link ? `<button class="ic sm hov" data-act="openLink" data-tip="Open Slack">${I.hash}</button>` : ''}
+          <button class="ic sm hov" data-act="iniMenu" data-tip="More ( . )">${I.more}</button>
+          <button class="ic sm" data-act="addTask" data-tip="New next step (A)">${I.plus}</button>
+        </div>
+      </div>
+      ${m ? `<button class="ini-date" data-act="timeline" data-tip="Dates and milestones (T)"><b>${esc(msWhen(m))}</b><span>${esc(m.label)}</span></button>` : ''}
+    </div>
+    ${fold
+      ? (open.length ? `<button class="fold-info" data-act="collapse">${plural(open.length, 'next step')}</button>` : '')
+      : `<div class="tasks" data-zone="ini" data-ini="${esc(i.id)}">${open.map(taskCard).join('')}</div>
+        ${UI.showDone[i.id] && done.length ? `<div class="done-list">${done.map(t => `<div class="dn" data-nav data-kind="task" data-id="${esc(t.id)}" data-z="board-done"><button class="check on" data-act="toggleDone" data-tip="Reopen">${I.check}</button><span>${esc(t.title)}</span></div>`).join('')}</div>` : ''}`}
+  </div>`;
+}
+function stageCol(st) {
+  const inis = S.initiatives.filter(i => i.stage === st.id && iniVisible(i));
+  return `<div class="col" data-stage="${esc(st.id)}">
+    <div class="col-head"><span class="col-name"${st.hint ? ` data-tip="${esc(st.hint)}"` : ''}>${esc(st.name)}</span><span class="col-count">${inis.length || ''}</span><button class="ic sm" data-act="addIni" data-stage="${esc(st.id)}" data-tip="New initiative (Shift A)">${I.plus}</button></div>
+    <div class="col-body" data-zone="col" data-stage="${esc(st.id)}" data-scroll-key="col-${esc(st.id)}">${inis.map(iniCard).join('')}${inis.length ? '' : `<button class="empty-add" data-act="addIni" data-stage="${esc(st.id)}">${I.plus}New initiative</button>`}</div>
+  </div>`;
+}
+
+/* ================= Render ================= */
+function render(o = {}) {
+  if (editing) { renderPending = true; return; }
+  renderPending = false;
+  const flip = o.flip !== false && !firstRender && !reduceMotion && !dragging;
+  const before = flip ? measure() : null;
+  const sc = {}; $$('[data-scroll-key]').forEach(el => { sc[el.dataset.scrollKey] = el.scrollTop; });
+  applyTheme();
+  renderTopbar(); renderBoard(); renderPlanner();
+  $$('[data-scroll-key]').forEach(el => { if (sc[el.dataset.scrollKey] != null) el.scrollTop = sc[el.dataset.scrollKey]; });
+  if (sel && !selEl()) { sel = selFallback; const e = sel && selEl(); if (e) e.classList.add('sel'); else sel = null; }
+  selFallback = null;
+  applyPlan(planStagger); planStagger = false;
+  if (before) playFlip(before);
+  initSortables();
+  firstRender = false;
+}
+function measure() { const m = new Map(); $$('[data-key]').forEach(el => { const r = el.getBoundingClientRect(); if (r.width) m.set(el.dataset.key, r); }); return m; }
+function playFlip(before) {
+  const deltas = new Map();
+  $$('[data-key]').forEach(el => {
+    const r = el.getBoundingClientRect(); if (!r.width) return;
+    const b = before.get(el.dataset.key);
+    const par = el.parentElement && el.parentElement.closest('[data-key]');
+    const pdlt = (par && deltas.get(par)) || [0, 0];
+    if (!b) { deltas.set(el, [0, 0]); if (!par || before.has(par.dataset.key)) el.animate([{ opacity: 0, transform: 'translateY(4px)' }, { opacity: 1, transform: 'none' }], { duration: 200, easing: 'ease-out' }); return; }
+    const dx = b.left - r.left, dy = b.top - r.top;
+    deltas.set(el, [dx, dy]);
+    const rx = dx - pdlt[0], ry = dy - pdlt[1];
+    if (Math.abs(rx) > 1 || Math.abs(ry) > 1) el.animate([{ transform: `translate(${rx}px,${ry}px)` }, { transform: 'none' }], { duration: 300, easing: 'cubic-bezier(.2,.8,.2,1)' });
+  });
+}
+function applyTheme() {
+  const th = S.settings.theme;
+  if (th === 'light' || th === 'dark') document.documentElement.dataset.theme = th; else delete document.documentElement.dataset.theme;
+}
+function renderTopbar() {
+  $('#tb-name').textContent = S.settings.name;
+  document.title = S.settings.name;
+  const pb = $('#tb-prio');
+  pb.innerHTML = I.star; pb.classList.toggle('on', UI.priorityOnly);
+  pb.dataset.tip = UI.priorityOnly ? 'Showing priority initiatives only. Click to show all' : `Show priority initiatives only (${prioCount()} of ${S.settings.priorityCap})`;
+  renderSync();
+}
+function renderBoard() {
+  let h = '';
+  if (S.sample) h += `<div class="note-line"><span>This is a sample workspace for a rider-app PM at Uber.</span><button data-act="clearSample">Start fresh</button><button class="q" data-act="keepSample">Hide this</button></div>`;
+  else if (UI.priorityOnly || q()) h += `<div class="note-line"><span>${UI.priorityOnly && q() ? `Priority initiatives matching “${esc(query.trim())}”` : UI.priorityOnly ? 'Showing priority initiatives only' : `Showing matches for “${esc(query.trim())}”`}</span><button data-act="clearFilters">Show everything</button></div>`;
+  h += `<div class="cols">${S.stages.map(stageCol).join('')}</div>`;
+  $('#board').innerHTML = h;
+}
+
+/* ================= Planner: Daily and Weekly ================= */
+const deckEl = $('#deck'), deckEls = {}, spineEl = $('#spine'), scrimEl = $('#scrim');
+const PLAN_ORDER = ['min', 'daily', 'weekly', 'notes'];
+const CARDS = ['daily', 'weekly', 'notes'];
+CARDS.forEach(n => {
+  const c = document.createElement('section');
+  c.className = 'dcard'; c.dataset.card = n;
+  c.innerHTML = `<div class="dhead"></div><div class="dlist" data-scroll-key="plan-${n}"></div>${n === 'daily' ? '<div class="dhint">Release to remove from Daily</div>' : ''}`;
+  deckEl.appendChild(c); deckEls[n] = c;
+});
+deckEls.notes.querySelector('.dlist').innerHTML = '<textarea class="notes" id="notes" placeholder="Quick notes. Saved as you type." aria-label="Scratchpad"></textarea>';
+const notesEl = $('#notes');
+let notesTimer = null;
+notesEl.addEventListener('input', () => { S.notes = notesEl.value; clearTimeout(notesTimer); notesTimer = setTimeout(touch, 400); });
+notesEl.addEventListener('blur', () => { if (notesTimer) { clearTimeout(notesTimer); notesTimer = null; touch(); } });
+function dailyRow(t) {
+  const i = getIni(t.ini);
+  return `<div class="drow${selCls('task', t.id, 'plan')}" data-nav data-kind="task" data-id="${esc(t.id)}" data-z="plan" data-key="d-${esc(t.id)}">
+    <button class="check" data-act="toggleDone" data-tip="Complete (X)">${I.check}</button>
+    <div class="dr-main"><div class="t-title" data-edit="taskTitle" data-ph="Describe the next step">${esc(t.title)}</div><div class="dr-ini">${esc(i ? i.name : '')}</div></div>
+    <div class="tools">
+      <button class="ic sm" data-act="daily" data-tip="Remove from Daily (D)">${I.x}</button>
+      <button class="ic sm" data-act="mode" data-tip="Mode (M)">${I.bolt}</button>
+      <button class="ic sm" data-act="obj" data-tip="Objective (O)">${I.flag}</button>
+      ${t.link ? `<button class="ic sm" data-act="openLink" data-tip="Open Slack">${I.hash}</button>` : ''}
+      <button class="ic sm" data-act="taskMenu" data-tip="More ( . )">${I.more}</button>
+    </div>
+  </div>`;
+}
+function modeGroups(tasks) {
+  const groups = S.modes.map(m => ({ key: m.id, label: m.name, hint: m.hint, items: tasks.filter(t => t.mode === m.id) }))
+    .concat([{ key: '', label: 'No mode', hint: 'Select a task and press a number key to give it a mode', items: tasks.filter(t => !getMode(t.mode)) }])
+    .filter(g => g.items.length);
+  return groups.map(g => `<div class="dg"><div class="dg-label"${g.hint ? ` data-tip="${esc(g.hint)}"` : ''}>${esc(g.label)}<span>${g.items.length}</span></div><div class="dl" data-zone="daily" data-gk="mode" data-gv="${esc(g.key)}">${g.items.map(dailyRow).join('')}</div></div>`).join('');
+}
+function objItem(o, k) {
+  const ts = S.tasks.filter(t => t.obj === o.id);
+  const done = ts.filter(t => t.done).length;
+  const open = !!UI.objOpen[o.id];
+  const rows = ts.filter(t => !t.done).concat(ts.filter(t => t.done));
+  return `<div class="obj${open ? ' open' : ''}${selCls('obj', o.id, 'plan')}" data-nav data-kind="obj" data-id="${esc(o.id)}" data-z="plan" data-key="o-${esc(o.id)}">
+    <div class="obj-row" data-act="objToggle">
+      <span class="chev" data-tip="${open ? 'Collapse' : 'Show linked tasks'}">${I.chevR}</span>
+      <span class="onum">${k + 1}</span>
+      <div class="obj-title" data-edit="objTitle" data-ph="An outcome you want by the end of the cycle">${esc(o.title)}</div>
+      <button class="sdot s-${o.status}" data-act="objStatus" data-tip="${STATUS[o.status]}. Click to change" aria-label="${STATUS[o.status]}"></button>
+      <span class="oprog" data-tip="${done} of ${ts.length} linked tasks done">${done}/${ts.length}</span>
+      <div class="obj-drop" data-zone="obj" data-obj="${esc(o.id)}"></div>
+    </div>
+    ${open ? `<div class="obj-body"><div class="obj-tasks" data-zone="obj" data-obj="${esc(o.id)}">${rows.map(t => {
+      const i = getIni(t.ini);
+      return `<div class="otask${t.done ? ' done' : ''}${selCls('task', t.id, 'plan')}" data-nav data-kind="task" data-id="${esc(t.id)}" data-z="plan" data-key="ot-${esc(t.id)}">
+        <button class="check${t.done ? ' on' : ''}" data-act="toggleDone" data-tip="${t.done ? 'Reopen' : 'Complete (X)'}">${I.check}</button>
+        <div class="ot-main"><div class="ot-title" data-edit="taskTitle" data-ph="Untitled task">${esc(t.title)}</div><div class="ot-ini">${esc(i ? i.name : '')}</div></div>
+        <div class="tools">${t.link ? `<button class="ic sm" data-act="openLink" data-tip="Open Slack">${I.hash}</button>` : ''}<button class="ic sm" data-act="unlinkObj" data-tip="Unlink from this objective">${I.x}</button></div></div>`;
+    }).join('')}</div>
+    <div class="obj-foot"><button class="qlink" data-act="linkTask" data-tip="Link a task (A)">${I.plus}Link a task</button><button class="ic sm" data-act="objMenu" data-tip="More ( . )">${I.more}</button></div></div>` : ''}
+  </div>`;
+}
+function renderPlanner() {
+  const cap = S.settings.dailyCap;
+  const dailyT = S.daily.map(getTask).filter(t => t && !t.done);
+  const n = dailyT.length, c = cycle();
+  const ctl = `<div class="dctl"><button class="ic sm" data-act="toggleBlur" data-tip="${UI.planBlur ? 'Show the board so you can drag tasks in (B)' : 'Blur the board (B)'}">${UI.planBlur ? I.eye : I.eyeOff}</button><button class="ic sm" data-act="closePlan" data-tip="Close (Esc)">${I.x}</button></div>`;
+  const shown = dailyT.filter(taskMatches);
+  setCard('daily', `<h2>Daily</h2><span class="dcount" data-tip="${n >= cap ? 'Full. Swap a task out to add another' : plural(cap - n, 'slot') + ' free'}">${n} of ${cap}</span>${ctl}`,
+    n ? modeGroups(shown) : `<div class="dl dempty" data-zone="daily" data-gk="" data-gv="">Nothing planned for today yet.<br>Press D on any task, or show the board and drag tasks here.</div>`);
+  let left;
+  if (c.day < 1) left = 'Starts ' + fmtWDM(c.start);
+  else if (c.day > c.len) left = 'Cycle ended';
+  else left = c.left === 0 ? 'Last day' : plural(c.left, 'day') + ' left';
+  const ocap = S.settings.objectiveCap;
+  const allOpen = S.objectives.length && S.objectives.every(o => UI.objOpen[o.id]);
+  const wctl = ctl.replace('<div class="dctl">', `<div class="dctl">${S.objectives.length ? `<button class="ic sm" data-act="expandAll" data-tip="${allOpen ? 'Collapse all' : 'Expand all'}">${allOpen ? I.collapseAll : I.expandAll}</button>` : ''}`);
+  setCard('weekly', `<h2>${cycleLabel()}</h2><span class="dcount" data-tip="${esc(fmtWDM(c.start) + ' to ' + fmtWDM(c.end))}">${left}</span>${wctl}`,
+    `${c.day > c.len ? `<div class="over-note">This cycle has ended.<button data-act="nextCycle">Start the next one</button></div>` : ''}
+     ${S.objectives.map(objItem).join('')}
+     ${!S.objectives.length ? `<div class="obj-empty">Set up to ${ocap} outcomes you want by the end of this cycle, then link the tasks that move them.</div>` : ''}
+     ${S.objectives.length < ocap ? `<button class="qlink add-obj" data-act="addObj" data-tip="New objective (Shift O)">${I.plus}Add objective</button>` : ''}`);
+  deckEls.notes.querySelector('.dhead').innerHTML = `<h2>Scratchpad</h2>${ctl}`;
+  if (document.activeElement !== notesEl && notesEl.value !== S.notes) notesEl.value = S.notes;
+  $('#sp-n').textContent = n + '/' + cap;
+  $('#sp-dots').innerHTML = S.objectives.map(o => `<i class="s-${o.status}"></i>`).join('');
+}
+function setCard(n, head, body) {
+  const c = deckEls[n];
+  c.querySelector('.dhead').innerHTML = head;
+  c.querySelector('.dlist').innerHTML = body;
+}
+const planWidth = () => Math.max(340, Math.min(UI.planW || 440, 760, innerWidth - 60));
+function applyPlan(stagger) {
+  const open = planOpen();
+  deckEl.dataset.mode = open ? 'open' : 'min';
+  deckEl.style.width = planWidth() + 'px';
+  const front = open ? UI.plan : 'daily', fi = CARDS.indexOf(front);
+  [0, 1, 2].forEach(p => {
+    const n = CARDS[(fi + p) % 3], c = deckEls[n];
+    c.style.transitionDelay = stagger ? (p * 60) + 'ms' : '0ms';
+    c.style.transform = !open ? 'translateX(calc(100% + 90px))' : p === 0 ? 'none' : p === 1 ? 'translateY(-38px) scale(.95)' : 'translateY(-72px) scale(.9)';
+    c.style.zIndex = 10 - p;
+    c.classList.toggle('front', open && p === 0);
+    c.inert = !open;
+  });
+  spineEl.classList.toggle('hide', open);
+  scrimEl.classList.toggle('on', open && UI.planBlur);
+  $('#tb-plan').classList.toggle('on', open);
+  $('#board').inert = open && UI.planBlur;
+  $('.topbar').inert = open && UI.planBlur;
+}
+let switching = false;
+function setPlan(next, opt = {}) {
+  const prev = UI.plan;
+  if (prev === next || switching) { if (next === 'notes' && opt.focus) notesEl.focus({ preventScroll: true }); return; }
+  const finish = () => {
+    switching = false;
+    UI.plan = next; saveUI();
+    if (next === 'min' && sel && sel.z === 'plan') sel = null;
+    if (next !== 'min' && UI.planBlur && sel && sel.z === 'board') sel = null;
+    planStagger = prev === 'min' || next === 'min';
+    closePop();
+    render({ flip: false });
+    if (next === 'notes' && opt.focus) setTimeout(() => notesEl.focus({ preventScroll: true }), 30);
+    else if (document.activeElement === notesEl) notesEl.blur();
+  };
+  if (prev !== 'min' && next !== 'min' && !reduceMotion) {
+    switching = true;
+    const c = deckEls[next];
+    c.style.transition = 'transform .19s cubic-bezier(.3,.6,.4,1)'; c.style.transitionDelay = '0ms'; c.style.zIndex = '30';
+    c.style.transform = 'translateY(-72px) scale(.97)';
+    setTimeout(() => { c.style.transition = ''; finish(); }, 180);
+  } else finish();
+}
+function cyclePlan(dir) { const k = PLAN_ORDER.indexOf(UI.plan), n = PLAN_ORDER.length; setPlan(PLAN_ORDER[(k + dir + n) % n]); }
+function toggleNotes() { if (UI.plan === 'notes') setPlan('min'); else setPlan('notes', { focus: true }); }
+function expandAll() { const all = S.objectives.every(o => UI.objOpen[o.id]); S.objectives.forEach(o => { UI.objOpen[o.id] = !all; }); saveUI(); render(); }
+function toggleBlur() { UI.planBlur = !UI.planBlur; saveUI(); render({ flip: false }); }
+
+/* Gestures: a horizontal trackpad swipe on the planner or its closed bar cycles it; dragging a card's header does too. */
+let wheelX = 0, wheelT = null, wheelLock = 0;
+function onWheel(e) {
+  if (Math.abs(e.deltaX) <= Math.abs(e.deltaY) * 1.2) return;
+  e.preventDefault();
+  if (Date.now() < wheelLock) return;
+  wheelX += e.deltaX; clearTimeout(wheelT); wheelT = setTimeout(() => { wheelX = 0; }, 160);
+  if (Math.abs(wheelX) > 70) { const dir = wheelX > 0 ? 1 : -1; wheelX = 0; wheelLock = Date.now() + 520; cyclePlan(dir); }
+}
+deckEl.addEventListener('wheel', onWheel, { passive: false });
+spineEl.addEventListener('wheel', onWheel, { passive: false });
+deckEl.addEventListener('pointerdown', e => {
+  if (!planOpen() || e.button !== 0) return;
+  const c = e.target.closest('.dcard');
+  if (!c || !c.classList.contains('front') || !e.target.closest('.dhead') || e.target.closest('button')) return;
+  const sx = e.clientX, sy = e.clientY; let dx = 0, moved = false;
+  try { c.setPointerCapture(e.pointerId); } catch (_) {}
+  const move = ev => {
+    dx = ev.clientX - sx; const dy = ev.clientY - sy;
+    if (!moved && Math.abs(dx) < 5) return;
+    moved = true; c.style.transition = 'none';
+    c.style.transform = `translate(${dx}px,${dy * 0.15}px) rotate(${dx / 28}deg)`;
+  };
+  const up = () => {
+    c.removeEventListener('pointermove', move); c.removeEventListener('pointerup', up); c.removeEventListener('pointercancel', up);
+    c.style.transition = '';
+    if (!moved) return;
+    lastDragEnd = Date.now();
+    if (dx > 110) setPlan('min'); else if (dx < -90) setPlan(CARDS[(CARDS.indexOf(UI.plan) + 1) % 3]); else applyPlan(false);
+  };
+  c.addEventListener('pointermove', move); c.addEventListener('pointerup', up); c.addEventListener('pointercancel', up);
+});
+/* Resize the planner by dragging its left edge. */
+$('#resizer').addEventListener('pointerdown', e => {
+  if (e.button !== 0) return;
+  e.preventDefault();
+  const sx = e.clientX, sw = planWidth();
+  document.body.classList.add('resizing');
+  const move = ev => { UI.planW = Math.max(340, Math.min(760, innerWidth - 60, sw + (sx - ev.clientX))); deckEl.style.width = UI.planW + 'px'; };
+  const up = () => { document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', up); document.body.classList.remove('resizing'); saveUI(); lastDragEnd = Date.now(); };
+  document.addEventListener('pointermove', move); document.addEventListener('pointerup', up);
+});
+scrimEl.addEventListener('click', () => { if (Date.now() - lastDragEnd > 150) setPlan('min'); });
+
+/* ================= Tooltips: quick, not instant ================= */
+const tipEl = document.createElement('div'); tipEl.className = 'tip'; tipEl.setAttribute('role', 'tooltip'); document.body.appendChild(tipEl);
+let tipTimer = null, tipTarget = null, tipWarm = 0;
+function hideTip() { clearTimeout(tipTimer); if (tipEl.classList.contains('on')) tipWarm = Date.now() + 700; tipEl.classList.remove('on'); tipTarget = null; }
+function showTip(el) {
+  if (!el.isConnected || dragging) return;
+  tipEl.textContent = el.dataset.tip;
+  const r = el.getBoundingClientRect(), w = tipEl.offsetWidth, h = tipEl.offsetHeight;
+  let x = r.left + r.width / 2 - w / 2, y = r.bottom + 6;
+  if (y + h > innerHeight - 6) y = r.top - h - 6;
+  x = Math.max(6, Math.min(innerWidth - w - 6, x));
+  tipEl.style.left = x + 'px'; tipEl.style.top = y + 'px';
+  tipEl.classList.add('on');
+}
+document.addEventListener('mouseover', e => {
+  const el = e.target.closest && e.target.closest('[data-tip],[title]');
+  if (el === tipTarget) return;
+  hideTip();
+  if (!el || dragging || editing) return;
+  if (el.hasAttribute('title')) { el.dataset.tip = el.getAttribute('title'); el.removeAttribute('title'); }
+  if (!el.dataset.tip) return;
+  tipTarget = el;
+  tipTimer = setTimeout(() => showTip(el), Date.now() < tipWarm ? 60 : 280);
+});
+['mousedown', 'keydown', 'wheel'].forEach(ev => document.addEventListener(ev, hideTip, true));
+document.addEventListener('scroll', hideTip, true);
+
+/* ================= Selection and keyboard navigation ================= */
+function selEl() {
+  if (!sel) return null;
+  return $(`[data-nav][data-kind="${sel.kind}"][data-id="${CSS.escape(sel.id)}"][data-z="${sel.z}"]`);
+}
+function setSel(el, scroll = true) {
+  if (!el) return;
+  sel = { kind: el.dataset.kind, id: el.dataset.id, z: el.dataset.z };
+  $$('.sel').forEach(x => x.classList.remove('sel'));
+  el.classList.add('sel');
+  if (scroll) el.scrollIntoView({ block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth' });
+}
+function clearSel() { sel = null; $$('.sel').forEach(x => x.classList.remove('sel')); }
+function navCols() {
+  const cols = [];
+  if (boardLive()) $$('#board .col').forEach(c => cols.push($$('[data-nav]', c)));
+  if (planOpen()) cols.push($$('[data-nav]', deckEls[UI.plan]));
+  return cols.filter(c => c.length);
+}
+function moveSel(dx, dy) {
+  const cols = navCols(); if (!cols.length) return;
+  const cur = selEl();
+  if (!cur) { setSel(planOpen() ? cols[cols.length - 1][0] : cols[0][0]); return; }
+  const ci = cols.findIndex(c => c.includes(cur));
+  if (ci < 0) { setSel(cols[0][0]); return; }
+  if (dy) { const nx = cols[ci][cols[ci].indexOf(cur) + dy]; if (nx) setSel(nx); return; }
+  const tc = cols[ci + dx]; if (!tc) return;
+  const y = cur.getBoundingClientRect().top;
+  let best = tc[0], bd = Infinity;
+  tc.forEach(el => { const d = Math.abs(el.getBoundingClientRect().top - y); if (d < bd) { bd = d; best = el; } });
+  setSel(best);
+}
+function neighborOf(el) {
+  const col = navCols().find(c => c.includes(el)); if (!col) return null;
+  const k = col.indexOf(el);
+  const pick = col.slice(k + 1).find(x => !el.contains(x)) || col.slice(0, k).reverse().find(x => !el.contains(x) && !x.contains(el));
+  return pick ? { kind: pick.dataset.kind, id: pick.dataset.id, z: pick.dataset.z } : null;
+}
+
+/* ================= Inline editing ================= */
+const PLAINTEXT = (() => { const d = document.createElement('div'); try { d.contentEditable = 'plaintext-only'; } catch (e) { return false; } return d.contentEditable === 'plaintext-only'; })();
+function startEdit(el, opt = {}) {
+  if (editing) finishEdit(true);
+  hideTip();
+  const kind = el.dataset.edit;
+  const host = el.closest('[data-nav]');
+  if (!host) return;
+  setSel(host, false);
+  editing = { el, kind, id: host.dataset.id, orig: el.textContent, isNew: !!opt.isNew };
+  el.contentEditable = PLAINTEXT ? 'plaintext-only' : 'true';
+  el.classList.add('editing'); el.spellcheck = true;
+  el.focus();
+  const r = document.createRange(); r.selectNodeContents(el); if (!opt.selectAll) r.collapse(false);
+  const s = getSelection(); s.removeAllRanges(); s.addRange(r);
+  el.addEventListener('keydown', onEditKey); el.addEventListener('blur', onEditBlur); el.addEventListener('paste', onEditPaste);
+}
+function onEditPaste(e) { e.preventDefault(); const t = (e.clipboardData || window.clipboardData).getData('text').replace(/\s+/g, ' '); document.execCommand('insertText', false, t); }
+function onEditKey(e) {
+  e.stopPropagation();
+  if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); finishEdit(true, { chain: true }); }
+  else if (e.key === 'Escape') { e.preventDefault(); finishEdit(false); }
+}
+function onEditBlur() { if (editing && editing.el === this) finishEdit(true, { fromBlur: true }); }
+function finishEdit(save, o = {}) {
+  const ed = editing; if (!ed) return;
+  editing = null;
+  const el = ed.el;
+  el.removeEventListener('keydown', onEditKey); el.removeEventListener('blur', onEditBlur); el.removeEventListener('paste', onEditPaste);
+  el.removeAttribute('contenteditable'); el.classList.remove('editing');
+  const val = el.textContent.replace(/\s+/g, ' ').trim();
+  const rerender = () => { if (o.fromBlur) renderSoon(); else render(); };
+  if (ed.isNew) {
+    const pn = pendingNew; pendingNew = null;
+    if (!save || !val) { removeEntity(ed.kind, ed.id); rerender(); return; }
+    setField(ed.kind, ed.id, val); pushHist(pn && pn.snap); touch();
+    if (o.chain && !o.fromBlur) {
+      if (ed.kind === 'taskTitle') { const t = getTask(ed.id); addTask(t.ini, ed.id, sel && sel.z); return; }
+      if (ed.kind === 'iniName') { addTask(ed.id); return; }
+    }
+    rerender(); return;
+  }
+  if (!save || !val || val === ed.orig.trim()) { el.textContent = ed.orig; if (renderPending) renderSoon(); return; }
+  const before = snapshot(); setField(ed.kind, ed.id, val); pushHist(before); touch(); rerender();
+}
+function renderSoon() { renderPending = true; setTimeout(() => { if (!editing && renderPending) render(); }, 220); }
+function setField(kind, id, v) {
+  if (kind === 'taskTitle') { const t = getTask(id); if (t) t.title = v; }
+  else if (kind === 'iniName') { const i = getIni(id); if (i) i.name = v; }
+  else if (kind === 'objTitle') { const o = getObj(id); if (o) o.title = v; }
+}
+function removeEntity(kind, id) {
+  if (kind === 'taskTitle') { S.tasks = S.tasks.filter(t => t.id !== id); S.daily = S.daily.filter(x => x !== id); }
+  else if (kind === 'iniName') { S.initiatives = S.initiatives.filter(i => i.id !== id); }
+  else if (kind === 'objTitle') { S.objectives = S.objectives.filter(o => o.id !== id); }
+}
+function renameIni(id) { const e = $(`#board [data-kind="ini"][data-id="${CSS.escape(id)}"] .ini-name`); if (e) startEdit(e, { selectAll: true }); }
+function renameObj(id) { const e = $(`#deck [data-kind="obj"][data-id="${CSS.escape(id)}"] .obj-title`); if (e) startEdit(e, { selectAll: true }); }
+
+/* ================= Actions ================= */
+function addTask(iniId, afterId, zone) {
+  const i = getIni(iniId); if (!i) return;
+  if (editing) finishEdit(true);
+  const intoDaily = zone === 'plan' && afterId && inDaily(afterId) && S.daily.length < S.settings.dailyCap;
+  if (!intoDaily && planOpen() && UI.planBlur) { UI.plan = 'min'; saveUI(); planStagger = true; }
+  setFold(iniId, false);
+  const snap = snapshot();
+  const t = { id: uid('t'), ini: iniId, title: '', mode: null, obj: null, link: '', done: false, doneAt: null };
+  let ix = afterId ? S.tasks.findIndex(x => x.id === afterId) : -1;
+  if (ix < 0) S.tasks.forEach((x, k) => { if (x.ini === iniId) ix = k; });
+  S.tasks.splice(ix + 1, 0, t);
+  if (intoDaily) { S.daily.splice(S.daily.indexOf(afterId) + 1, 0, t.id); const a = getTask(afterId); if (a) t.mode = a.mode; }
+  pendingNew = { snap };
+  sel = { kind: 'task', id: t.id, z: intoDaily ? 'plan' : 'board' };
+  if (!intoDaily && !iniVisible(i)) { UI.priorityOnly = false; query = ''; $('#search').value = ''; }
+  render();
+  const el = selEl();
+  const ed = el && el.querySelector('[data-edit]');
+  if (ed) { el.scrollIntoView({ block: 'nearest' }); startEdit(ed, { isNew: true }); }
+}
+function addIni(stageId) {
+  if (editing) finishEdit(true);
+  if (planOpen() && UI.planBlur) { UI.plan = 'min'; saveUI(); planStagger = true; }
+  if (!S.stages.some(s => s.id === stageId)) stageId = S.stages[0].id;
+  const snap = snapshot();
+  const i = { id: uid('i'), name: '', stage: stageId, priority: false, link: '', milestones: [] };
+  const first = S.initiatives.findIndex(x => x.stage === stageId);
+  if (first < 0) S.initiatives.push(i); else S.initiatives.splice(first, 0, i);
+  UI.fold[i.id] = false; saveUI();
+  pendingNew = { snap };
+  sel = { kind: 'ini', id: i.id, z: 'board' };
+  UI.priorityOnly = false; query = ''; $('#search').value = '';
+  render();
+  const el = selEl(); const ed = el && el.querySelector('[data-edit]');
+  if (ed) { el.scrollIntoView({ block: 'nearest' }); startEdit(ed, { isNew: true }); }
+}
+function addObj() {
+  if (editing) finishEdit(true);
+  if (S.objectives.length >= S.settings.objectiveCap) { toast(`You already have ${S.settings.objectiveCap} objectives. Change the limit in Settings.`); return; }
+  const snap = snapshot();
+  const o = { id: uid('o'), title: '', status: 'on' };
+  S.objectives.push(o);
+  UI.objOpen[o.id] = true; UI.plan = 'weekly'; saveUI();
+  pendingNew = { snap };
+  sel = { kind: 'obj', id: o.id, z: 'plan' };
+  render({ flip: false });
+  const el = selEl(); const ed = el && el.querySelector('[data-edit]');
+  if (ed) { el.scrollIntoView({ block: 'nearest' }); startEdit(ed, { isNew: true }); }
+}
+function toggleDone(id, srcEl) {
+  const t = getTask(id); if (!t) return;
+  if (t.done) { commit(() => { const x = getTask(id); x.done = false; x.doneAt = null; }); return; }
+  const host = srcEl && srcEl.closest('[data-nav]');
+  const anim = host && !reduceMotion;
+  if (anim) host.classList.add('completing');
+  setTimeout(() => {
+    const ok = commit(() => { const x = getTask(id); if (!x || x.done) return false; x.done = true; x.doneAt = today(); S.daily = S.daily.filter(f => f !== id); });
+    if (ok) toast('Completed', { action: { label: 'Undo', fn: undo } });
+  }, anim ? 320 : 0);
+}
+function toggleDaily(id, anchor) {
+  const t = getTask(id); if (!t || t.done) return;
+  if (inDaily(id)) { commit(() => { S.daily = S.daily.filter(x => x !== id); }); return; }
+  if (S.daily.length >= S.settings.dailyCap) { dailyFull(id, anchor); return; }
+  commit(() => { S.daily.push(id); });
+}
+function togglePriority(id, anchor) {
+  const i = getIni(id); if (!i) return;
+  if (!i.priority && prioCount() >= S.settings.priorityCap) {
+    toast(`All ${S.settings.priorityCap} priority slots are taken. Remove one first.`); shake(anchor && anchor.isConnected ? anchor : $('#tb-prio')); return;
+  }
+  commit(() => { const x = getIni(id); x.priority = !x.priority; });
+}
+function toggleFold(id) { const i = getIni(id); if (!i) return; setFold(id, !isFolded(i)); render(); }
+function setMode(id, v) { commit(() => { const t = getTask(id); if (!t || t.mode === v) return false; t.mode = v; }); }
+function setObj(id, v) { commit(() => { const t = getTask(id); if (!t || t.obj === v) return false; t.obj = v; }); }
+function setStatus(id, v) { commit(() => { const o = getObj(id); if (!o || o.status === v) return false; o.status = v; }, { flip: false }); }
+function deleteTask(id) {
+  if (!getTask(id)) return;
+  commit(() => { S.tasks = S.tasks.filter(x => x.id !== id); S.daily = S.daily.filter(x => x !== id); });
+  toast('Task deleted', { action: { label: 'Undo', fn: undo } });
+}
+function deleteIni(id) {
+  const i = getIni(id); if (!i) return;
+  commit(() => { const gone = new Set(S.tasks.filter(t => t.ini === id).map(t => t.id)); S.initiatives = S.initiatives.filter(x => x.id !== id); S.tasks = S.tasks.filter(t => t.ini !== id); S.daily = S.daily.filter(f => !gone.has(f)); });
+  toast(`Deleted “${trunc(i.name || 'Untitled', 40)}”`, { action: { label: 'Undo', fn: undo } });
+}
+function deleteObj(id) {
+  commit(() => { S.objectives = S.objectives.filter(o => o.id !== id); S.tasks.forEach(t => { if (t.obj === id) t.obj = null; }); }, { flip: false });
+  toast('Objective deleted', { action: { label: 'Undo', fn: undo } });
+}
+function moveIniTo(id, stageId) {
+  commit(() => { const i = getIni(id); if (!i || i.stage === stageId) return false; i.stage = stageId; S.initiatives = S.initiatives.filter(x => x !== i); S.initiatives.push(i); });
+}
+function swapIn(arr, a, b) { const x = arr.indexOf(a), y = arr.indexOf(b); if (x < 0 || y < 0) return false; arr[x] = b; arr[y] = a; return true; }
+function moveSelected(dx, dy) {
+  if (!sel) return;
+  const el = selEl(); if (!el) return;
+  if (sel.kind === 'task' && dy) {
+    if (el.classList.contains('drow')) {
+      const sib = dy < 0 ? el.previousElementSibling : el.nextElementSibling;
+      if (!sib || !sib.dataset.id) return;
+      commit(() => swapIn(S.daily, sel.id, sib.dataset.id));
+    } else {
+      const t = getTask(sel.id); if (!t) return;
+      const sibs = S.tasks.filter(x => x.ini === t.ini && !x.done);
+      const o = sibs[sibs.indexOf(t) + dy]; if (!o) return;
+      commit(() => swapIn(S.tasks, t, o));
+    }
+  } else if (sel.kind === 'ini') {
+    const i = getIni(sel.id); if (!i) return;
+    if (dx) {
+      const k = S.stages.findIndex(s => s.id === i.stage) + dx;
+      if (k < 0 || k >= S.stages.length) return;
+      moveIniTo(i.id, S.stages[k].id);
+    } else {
+      const sibs = S.initiatives.filter(x => x.stage === i.stage && iniVisible(x));
+      const o = sibs[sibs.indexOf(i) + dy]; if (!o) return;
+      commit(() => swapIn(S.initiatives, i, o));
+    }
+  } else if (sel.kind === 'obj' && dy) {
+    const o = getObj(sel.id), k = S.objectives.indexOf(o), other = S.objectives[k + dy];
+    if (other) commit(() => swapIn(S.objectives, o, other));
+  }
+}
+function nextCycle() {
+  commit(() => { const s = S.settings; let st = s.cycleStart, guard = 0; while (diffDays(today(), addDays(st, s.cycleDays - 1)) > 0 && guard++ < 500) st = addDays(st, s.cycleDays); s.cycleStart = st; }, { flip: false });
+  toast('New cycle started. Rewrite or keep your objectives for it.');
+}
+function toggleObjOpen(id) { UI.objOpen[id] = !UI.objOpen[id]; saveUI(); render(); }
+async function startFresh() {
+  if (!(await confirmBox('Clear the sample and start with an empty workspace? You can undo this.', 'Start fresh'))) return;
+  commit(() => { const keep = S.settings, nt = S.notes; S = emptyData(); S.settings.theme = keep.theme; S.settings.name = keep.name; S.notes = nt; }, { flip: false });
+  sel = null;
+  toast('Fresh workspace. Add your first initiative with the + in any stage.', { action: { label: 'Undo', fn: undo } });
+}
+function toast(msg, o = {}) {
+  const host = $('#toasts');
+  const el = document.createElement('div');
+  el.className = 'toast'; el.setAttribute('role', 'status');
+  el.innerHTML = `<span>${esc(msg)}</span>${o.action ? `<button>${esc(o.action.label)}</button>` : ''}`;
+  if (o.action) el.querySelector('button').addEventListener('click', () => { el.remove(); o.action.fn(); });
+  host.appendChild(el);
+  while (host.children.length > 3) host.firstElementChild.remove();
+  setTimeout(() => { el.style.transition = 'opacity .25s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 260); }, o.ms || 3400);
+}
+function shake(el) { if (!el) return; el.classList.remove('shake'); void el.offsetWidth; el.classList.add('shake'); }
+const normUrl = v => { v = (v || '').trim(); if (!v) return ''; if (!/^[a-z][a-z0-9+.-]*:/i.test(v)) v = 'https://' + v; return v; };
+function openUrl(u) {
+  if (!/^(https?|slack|mailto):/i.test(u)) { toast('That link type cannot be opened from here'); return; }
+  window.open(u, '_blank', 'noopener');
+}
+function setQuery(v) { query = v; render({ flip: false }); }
+
+/* ================= Popovers and menus ================= */
+let pop = null;
+function openPop(anchor, html, o = {}) {
+  closePop(); hideTip();
+  const el = document.createElement('div');
+  el.className = 'pop' + (o.wide ? ' wide' : '');
+  el.innerHTML = html;
+  document.body.appendChild(el);
+  pop = { el, anchor, onKey: o.onKey, onClose: o.onClose };
+  placePop(el, anchor, true);
+  requestAnimationFrame(() => el.classList.add('in'));
+  return el;
+}
+function placePop(el, anchor, first) {
+  const w = el.offsetWidth, h = el.offsetHeight, vw = innerWidth, vh = innerHeight;
+  let x, y;
+  if (anchor && anchor.isConnected) {
+    const r = anchor.getBoundingClientRect();
+    x = r.left; y = r.bottom + 6;
+    if (y + h > vh - 10) y = Math.max(10, r.top - h - 6);
+  } else if (first) { x = (vw - w) / 2; y = vh / 3; }
+  else { x = parseFloat(el.style.left) || 10; y = parseFloat(el.style.top) || 10; if (y + h > vh - 10) y = Math.max(10, vh - 10 - h); }
+  if (x + w > vw - 10) x = Math.max(10, vw - 10 - w);
+  el.style.left = Math.max(10, x) + 'px'; el.style.top = Math.max(10, y) + 'px';
+}
+function closePop() { if (!pop) return; const p = pop; pop = null; p.el.remove(); if (p.onClose) p.onClose(); }
+document.addEventListener('pointerdown', e => {
+  if (!pop || pop.el.contains(e.target)) return;
+  if (pop.anchor && pop.anchor.contains && pop.anchor.contains(e.target)) return;
+  closePop();
+}, true);
+function menu(anchor, o) {
+  const items = o.items.filter(Boolean);
+  const btnIx = items.map((it, k) => it.sep ? null : k).filter(k => k != null);
+  let hi = Math.max(0, btnIx.findIndex(k => items[k].cur));
+  const html = `${o.title ? `<div class="pop-h">${o.title}</div>` : ''}${o.sub ? `<div class="pop-sub">${o.sub}</div>` : ''}<div class="menu">${items.map((it, k) => it.sep ? '<div class="msep"></div>' : `<button class="mi${it.cur ? ' cur' : ''}" data-ix="${k}">${it.key != null ? `<kbd>${it.key}</kbd>` : ''}${it.label}${it.sk ? `<span class="sk">${it.sk}</span>` : ''}</button>`).join('')}</div>${o.footer ? `<div class="pop-f">${o.footer}</div>` : ''}`;
+  const pick = k => { closePop(); o.onPick(items[k].value); };
+  const el = openPop(anchor, html, {
+    wide: o.wide,
+    onKey: e => {
+      const btns = $$('.mi', el);
+      const paint = () => btns.forEach((b, k) => b.classList.toggle('hi', k === hi));
+      if (e.key === 'ArrowDown' || e.key === 'j') { hi = (hi + 1) % btns.length; paint(); return true; }
+      if (e.key === 'ArrowUp' || e.key === 'k') { hi = (hi - 1 + btns.length) % btns.length; paint(); return true; }
+      if (e.key === 'Enter') { if (btns[hi]) pick(+btns[hi].dataset.ix); return true; }
+      if (e.key === 'Escape') { closePop(); return true; }
+      const hit = items.findIndex(it => !it.sep && it.key != null && String(it.key).toLowerCase() === e.key.toLowerCase());
+      if (hit >= 0) { pick(hit); return true; }
+      return e.key.length === 1 || e.key === 'Tab';
+    }
+  });
+  $$('.mi', el).forEach((b, k) => b.classList.toggle('hi', k === hi));
+  el.addEventListener('click', e => { const b = e.target.closest('.mi'); if (b) pick(+b.dataset.ix); });
+}
+function modePicker(id, anchor) {
+  const t = getTask(id); if (!t) return;
+  menu(anchor, {
+    title: 'Mode', sub: 'What kind of energy does this need?',
+    items: S.modes.map((m, k) => ({ key: k < 9 ? k + 1 : null, value: m.id, cur: t.mode === m.id, label: `<span style="font-weight:600">${esc(m.name)}</span><span class="mh">${esc(m.hint)}</span>` }))
+      .concat([{ sep: true }, { key: 0, value: null, cur: !t.mode, label: '<span class="mh">No mode</span>' }]),
+    onPick: v => setMode(id, v)
+  });
+}
+function objPicker(id, anchor) {
+  const t = getTask(id); if (!t) return;
+  if (!S.objectives.length) {
+    menu(anchor, { title: 'Link to an objective', sub: 'There are no objectives for this cycle yet.', items: [{ value: 'new', label: `${I.plus}<span class="mt">Add an objective</span>` }], onPick: () => addObj() });
+    return;
+  }
+  menu(anchor, {
+    title: 'Link to an objective', wide: true,
+    items: S.objectives.map((o, k) => ({ key: k < 9 ? k + 1 : null, value: o.id, cur: t.obj === o.id, label: `<span class="mdot s-${o.status}"></span><span class="mt">${esc(o.title || 'Untitled objective')}</span>` }))
+      .concat([{ sep: true }, { key: 0, value: null, cur: !t.obj, label: '<span class="mh">Not linked</span>' }]),
+    onPick: v => setObj(id, v)
+  });
+}
+/* Daily is full: step 1 asks, step 2 lets you pick what to swap out. */
+function dailyFull(id, anchor) {
+  const t = getTask(id); if (!t) return;
+  menu(anchor, {
+    title: 'Daily is full',
+    sub: `${S.daily.length} of ${S.settings.dailyCap} planned. Swap a task out to make room for “${esc(trunc(t.title || 'this task', 48))}”?`,
+    items: [{ value: 'swap', cur: true, label: `${I.arrow}<span class="mt">Choose a task to swap out</span>`, sk: 'Enter' }, { value: 'no', label: '<span class="mh">Not now</span>', sk: 'Esc' }],
+    onPick: v => { if (v === 'swap') setTimeout(() => swapPicker(id, anchor), 0); }
+  });
+}
+function swapPicker(id, anchor) {
+  const t = getTask(id); if (!t) return;
+  menu(anchor && anchor.isConnected ? anchor : null, {
+    title: 'Swap out which task?', wide: true,
+    items: S.daily.map((fid, k) => {
+      const f = getTask(fid);
+      return { key: k < 9 ? k + 1 : (k === 9 ? 0 : null), value: fid, label: `<span class="mt">${esc(f ? f.title : '')}<small>${esc(f && getIni(f.ini) ? getIni(f.ini).name : '')}</small></span>` };
+    }),
+    onPick: out => {
+      commit(() => { const k = S.daily.indexOf(out); if (k < 0) return false; S.daily[k] = id; });
+      toast('Swapped. The other task is back on the board.', { action: { label: 'Undo', fn: undo } });
+    },
+    footer: 'Press a number to swap. Esc keeps your Daily as it is.'
+  });
+}
+function taskMenu(id, anchor) {
+  const t = getTask(id); if (!t) return;
+  const d = inDaily(id);
+  menu(anchor, {
+    title: esc(trunc(t.title || 'Untitled task', 40)),
+    items: [
+      { value: 'edit', label: `${I.pencil}<span class="mt">Edit title</span>`, sk: 'E' },
+      { value: 'daily', label: `${d ? I.x : I.target}<span class="mt">${d ? 'Remove from Daily' : 'Add to Daily'}</span>`, sk: 'D' },
+      { value: 'link', label: `${I.hash}<span class="mt">${t.link ? 'Edit Slack link' : 'Add Slack link'}</span>`, sk: 'S' },
+      t.link ? { value: 'unlink', label: `${I.x}<span class="mt">Remove Slack link</span>` } : null,
+      { sep: true },
+      { value: 'del', label: `${I.trash}<span class="mt">Delete task</span>`, sk: 'Del' }
+    ],
+    onPick: v => {
+      if (v === 'edit') { const e = selEl() && selEl().querySelector('[data-edit]'); if (e) startEdit(e); }
+      else if (v === 'daily') toggleDaily(id, anchor);
+      else if (v === 'link') linkEditor('task', id, anchor);
+      else if (v === 'unlink') commit(() => { getTask(id).link = ''; });
+      else if (v === 'del') deleteTask(id);
+    }
+  });
+}
+function iniMenu(id, anchor) {
+  const i = getIni(id); if (!i) return;
+  const nDone = S.tasks.filter(t => t.ini === id && t.done).length;
+  menu(anchor, {
+    title: esc(trunc(i.name || 'Untitled initiative', 40)),
+    items: [
+      { value: 'rename', label: `${I.pencil}<span class="mt">Rename</span>`, sk: 'E' },
+      { value: 'prio', label: `${I.star}<span class="mt">${i.priority ? 'Remove priority' : 'Mark as priority'}</span>`, sk: 'P' },
+      { value: 'time', label: `${I.cal}<span class="mt">Dates and milestones</span>`, sk: 'T' },
+      { value: 'link', label: `${I.hash}<span class="mt">${i.link ? 'Edit Slack link' : 'Add Slack link'}</span>`, sk: 'S' },
+      i.link ? { value: 'unlink', label: `${I.x}<span class="mt">Remove Slack link</span>` } : null,
+      nDone ? { value: 'done', label: `${I.check}<span class="mt">${UI.showDone[id] ? 'Hide' : 'Show'} ${nDone} done</span>` } : null,
+      { sep: true },
+      ...S.stages.filter(s => s.id !== i.stage).map(s => ({ value: 'stage:' + s.id, label: `${I.arrow}<span class="mt">Move to ${esc(s.name)}</span>` })),
+      { sep: true },
+      { value: 'del', label: `${I.trash}<span class="mt">Delete initiative</span>`, sk: 'Del' }
+    ],
+    onPick: v => {
+      if (v === 'rename') renameIni(id);
+      else if (v === 'prio') togglePriority(id);
+      else if (v === 'time') timelinePop(id, iniAnchor(id));
+      else if (v === 'link') linkEditor('ini', id, iniAnchor(id));
+      else if (v === 'unlink') commit(() => { getIni(id).link = ''; });
+      else if (v === 'done') { UI.showDone[id] = !UI.showDone[id]; setFold(id, false); render(); }
+      else if (v.startsWith('stage:')) moveIniTo(id, v.slice(6));
+      else if (v === 'del') deleteIni(id);
+    }
+  });
+}
+function objMenu(id, anchor) {
+  const o = getObj(id); if (!o) return;
+  menu(anchor, {
+    title: esc(trunc(o.title || 'Untitled objective', 40)),
+    items: [
+      { value: 'rename', label: `${I.pencil}<span class="mt">Rename</span>`, sk: 'E' },
+      { sep: true },
+      ...['on', 'risk', 'off'].map((s, k) => ({ key: k + 1, value: 'st:' + s, cur: o.status === s, label: `<span class="mdot s-${s}"></span><span class="mt">${STATUS[s]}</span>` })),
+      { sep: true },
+      { value: 'del', label: `${I.trash}<span class="mt">Delete objective</span>`, sk: 'Del' }
+    ],
+    onPick: v => {
+      if (v === 'rename') renameObj(id);
+      else if (v.startsWith('st:')) setStatus(id, v.slice(3));
+      else if (v === 'del') deleteObj(id);
+    }
+  });
+}
+function statusPicker(id, anchor) {
+  const o = getObj(id); if (!o) return;
+  menu(anchor, { title: 'Status', items: ['on', 'risk', 'off'].map((s, k) => ({ key: k + 1, value: s, cur: o.status === s, label: `<span class="mdot s-${s}"></span><span class="mt">${STATUS[s]}</span>` })), onPick: v => setStatus(id, v) });
+}
+const iniAnchor = id => { const e = $(`#board [data-kind="ini"][data-id="${CSS.escape(id)}"]`); return e && (e.querySelector('.ini-date') || e.querySelector('.ini-head')); };
+function linkEditor(kind, id, anchor) {
+  const ent = kind === 'ini' ? getIni(id) : getTask(id); if (!ent) return;
+  const el = openPop(anchor, `<div class="pop-h">Slack link<span>${esc(trunc(kind === 'ini' ? ent.name : ent.title, 44))}</span></div>
+    <div class="pop-pad"><input class="pin" type="url" placeholder="Paste a channel or thread link" value="${esc(ent.link)}"></div>
+    <div class="pop-row"><span class="pop-hint">Enter to save. Clear it to remove the link.</span></div>`);
+  const inp = $('.pin', el); inp.focus(); inp.select();
+  const save = v => commit(() => { const x = kind === 'ini' ? getIni(id) : getTask(id); if (!x) return false; v = normUrl(v); if (x.link === v) return false; x.link = v; });
+  inp.addEventListener('keydown', e => { e.stopPropagation(); if (e.key === 'Enter') { e.preventDefault(); save(inp.value); closePop(); } else if (e.key === 'Escape') { e.preventDefault(); closePop(); } });
+}
+function timelinePop(iniId, anchor) {
+  if (!getIni(iniId)) return;
+  const el = openPop(anchor, '', { wide: true });
+  const draw = focusAdd => {
+    const ii = getIni(iniId); if (!ii) { closePop(); return; }
+    const ms = ii.milestones.slice().sort((a, b) => (a.date || '9999') < (b.date || '9999') ? -1 : 1);
+    el.innerHTML = `<div class="pop-h">Dates<span>${esc(ii.name)}</span></div>
+      <div class="tl">${ms.length ? ms.map(m => `<div class="tl-row${m.done ? ' done' : ''}" data-mid="${esc(m.id)}"><button class="check${m.done ? ' on' : ''}" data-a="done" data-tip="${m.done ? 'Mark as not done' : 'Mark as done'}">${I.check}</button><input type="date" class="tl-d" value="${esc(m.date)}" aria-label="Date"><input class="tl-l" value="${esc(m.label)}" placeholder="Milestone" aria-label="Milestone"><button class="ic sm" data-a="del" data-tip="Remove">${I.x}</button></div>`).join('')
+        : `<div class="tl-empty">No dates yet. Add the next date that forces a decision, a review or a launch.</div>`}</div>
+      <div class="tl-add"><input type="date" class="tl-d" data-new="d" value="${addDays(today(), 7)}" aria-label="New milestone date"><input class="tl-l" data-new="l" placeholder="Add a milestone, e.g. Beta at 10%" aria-label="New milestone"><button class="btn-s" data-a="add">Add</button></div>`;
+    placePop(el, anchor, false);
+    if (focusAdd) $('[data-new="l"]', el).focus();
+  };
+  const upd = (mid, fn) => commit(() => { const ii = getIni(iniId); const m = ii && ii.milestones.find(x => x.id === mid); if (!m) return false; return fn(m); }, { flip: false });
+  const add = () => {
+    const d = $('[data-new="d"]', el), l = $('[data-new="l"]', el);
+    if (!l.value.trim()) { l.focus(); shake(l); return; }
+    if (!isYmd(d.value)) { d.focus(); shake(d); return; }
+    commit(() => { getIni(iniId).milestones.push({ id: uid('ms'), date: d.value, label: l.value.trim(), done: false }); }, { flip: false });
+    draw(true);
+  };
+  draw(true);
+  el.addEventListener('change', e => {
+    const row = e.target.closest('[data-mid]'); if (!row) return;
+    const mid = row.dataset.mid, v = e.target.value;
+    if (e.target.classList.contains('tl-d')) upd(mid, m => { if (!isYmd(v) || v === m.date) return false; m.date = v; });
+    else upd(mid, m => { const s = v.trim(); if (!s || s === m.label) return false; m.label = s; });
+  });
+  el.addEventListener('click', e => {
+    const b = e.target.closest('[data-a]'); if (!b) return;
+    const a = b.dataset.a; if (a === 'add') { add(); return; }
+    const mid = b.closest('[data-mid]').dataset.mid;
+    if (a === 'done') { upd(mid, m => { m.done = !m.done; }); draw(); }
+    else if (a === 'del') { commit(() => { const ii = getIni(iniId); ii.milestones = ii.milestones.filter(x => x.id !== mid); }, { flip: false }); draw(); }
+  });
+  el.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closePop(); return; }
+    if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); if (e.target.dataset.new) add(); else e.target.blur(); }
+  });
+}
+function linkTaskPicker(objId, anchor) {
+  const o = getObj(objId); if (!o) return;
+  const el = openPop(anchor, `<div class="pop-h">Link a task<span>${esc(o.title)}</span></div><div class="pop-pad"><input class="pin" placeholder="Search open tasks"></div><div class="lt"></div><div class="pop-f">Enter links the highlighted task. With the board showing, you can also drag tasks onto an objective.</div>`, { wide: true });
+  const inp = $('.pin', el), list = $('.lt', el);
+  let hi = 0, res = [];
+  const draw = () => {
+    const s = inp.value.trim().toLowerCase();
+    res = orderedOpen().filter(t => t.obj !== objId && (!s || t.title.toLowerCase().includes(s) || ((getIni(t.ini) || {}).name || '').toLowerCase().includes(s))).slice(0, 12);
+    hi = Math.min(hi, Math.max(0, res.length - 1));
+    list.innerHTML = res.length ? res.map((t, k) => `<button class="mi${k === hi ? ' hi' : ''}" data-ix="${k}"><span class="mt">${esc(t.title)}<small>${esc((getIni(t.ini) || {}).name || '')}${t.obj ? `, now on objective ${objNum(t.obj)}` : ''}</small></span></button>`).join('') : '<div class="pop-sub">No matching open tasks.</div>';
+  };
+  const pick = t => { if (!t) return; commit(() => { const x = getTask(t.id); if (x) x.obj = objId; }, { flip: false }); draw(); inp.focus(); };
+  draw(); inp.focus();
+  inp.addEventListener('input', () => { hi = 0; draw(); });
+  inp.addEventListener('keydown', e => {
+    e.stopPropagation();
+    if (e.key === 'ArrowDown') { e.preventDefault(); hi = Math.min(hi + 1, res.length - 1); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); hi = Math.max(hi - 1, 0); draw(); }
+    else if (e.key === 'Enter') { e.preventDefault(); pick(res[hi]); }
+    else if (e.key === 'Escape') { e.preventDefault(); closePop(); }
+  });
+  list.addEventListener('click', e => { const b = e.target.closest('[data-ix]'); if (b) pick(res[+b.dataset.ix]); });
+}
+
+/* ================= Modals ================= */
+const modals = [];
+function openModal(cls = '') {
+  closePop(); hideTip();
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal ${cls}" role="dialog" aria-modal="true"></div>`;
+  document.body.appendChild(bg);
+  requestAnimationFrame(() => bg.classList.add('in'));
+  bg.addEventListener('mousedown', e => { if (e.target === bg) closeModal(); });
+  modals.push(bg);
+  return bg.firstElementChild;
+}
+function closeModal() {
+  const bg = modals.pop(); if (!bg) return;
+  bg.classList.remove('in');
+  if (bg._onClose) bg._onClose();
+  setTimeout(() => bg.remove(), 170);
+}
+function confirmBox(msg, okLabel = 'Continue') {
+  return new Promise(res => {
+    const m = openModal('small');
+    m.innerHTML = `<p class="confirm-msg">${esc(msg)}</p><div class="btnrow end"><button class="btn" data-c="0">Cancel</button><button class="btn pri" data-c="1">${esc(okLabel)}</button></div>`;
+    let done = false;
+    m.parentElement._onClose = () => { if (!done) { done = true; res(false); } };
+    m.addEventListener('click', e => { const c = e.target.closest('[data-c]'); if (!c) return; done = true; res(c.dataset.c === '1'); closeModal(); });
+    setTimeout(() => { const b = m.querySelector('[data-c="1"]'); b && b.focus(); }, 40);
+  });
+}
+function openShortcuts() {
+  const m = openModal();
+  const MODK = MAC ? '⌘' : 'Ctrl';
+  const k = (...ks) => ks.map(x => x === '|' ? '<span>or</span>' : `<kbd>${x}</kbd>`).join('');
+  const nModes = String(Math.min(9, Math.max(1, S.modes.length)));
+  const groups = [
+    ['Planner', [['Cycle: closed, Daily, Weekly, Scratchpad', k('Space')], ['Cycle backwards', k('⇧', 'Space')], ['Scratchpad', k('N')], ['Close', k('Esc')], ['Show or blur the board', k('B')], ['Go to Daily or Weekly', k('G', 'D') + ' ' + k('G', 'W')]]],
+    ['Move around', [['Move between cards', k('↑', '↓', '←', '→')], ['Same, Vim style', k('j', 'k', 'h', 'l')], ['Search', k('/')], ['More actions', k('.')], ['Undo', k(MODK, 'Z')], ['Redo', k('⇧', MODK, 'Z')]]],
+    ['Tasks', [['Edit title', k('Enter')], ['Complete', k('X')], ['Add to or remove from Daily', k('D')], ['Set mode', k('1') + '<span>to</span>' + k(nModes)], ['Clear mode', k('0')], ['Link to an objective', k('O')], ['Slack link', k('S')], ['New next step below', k('A')], ['Reorder', k('⌥', '↑') + k('⌥', '↓')], ['Delete', k('Delete')]]],
+    ['Initiatives', [['Expand or collapse', k('Enter')], ['Rename', k('E')], ['New next step', k('A')], ['Priority on or off', k('P')], ['Dates', k('T')], ['Move to previous or next stage', k('⌥', '←') + k('⌥', '→')], ['New initiative in this stage', k('⇧', 'A')]]],
+    ['Objectives', [['Expand or collapse', k('Enter')], ['Rename', k('E')], ['Status', k('1') + k('2') + k('3')], ['Link a task', k('A')], ['New objective', k('⇧', 'O')]]],
+    ['Help', [['This list', k('?')]]]
+  ];
+  m.innerHTML = `<div class="mh-row"><h2>Keyboard shortcuts</h2><button class="icb" data-x data-tip="Close">${I.x}</button></div>
+    <p class="note">Select any card with the arrow keys or a click, then act on it with a single key.</p>
+    <div class="keys">${groups.map(([h, rows]) => `<div class="kgroup"><h4>${h}</h4>${rows.map(([a, b]) => `<div class="krow"><span>${a}</span><span>${b}</span></div>`).join('')}</div>`).join('')}</div>`;
+  m.addEventListener('click', e => { if (e.target.closest('[data-x]')) closeModal(); });
+}
+
+/* ================= Settings ================= */
+let settingsTab = 'general';
+function openSettings(tab) {
+  if (tab) settingsTab = tab;
+  const m = openModal('smodal');
+  const TABS = [['general', 'General'], ['limits', 'Limits'], ['cycle', 'Objective cycle'], ['stages', 'Stages'], ['modes', 'Modes'], ['data', 'Data and Claude']];
+  const sel2 = (f, opts, cur) => `<select class="inp" data-f="${f}">${opts.map(([v, l]) => `<option value="${v}"${String(cur) === String(v) ? ' selected' : ''}>${l}</option>`).join('')}</select>`;
+  const row = (label, hint, control) => `<div class="srow"><label>${label}${hint ? `<small>${hint}</small>` : ''}</label>${control || ''}</div>`;
+  const head = (t, p) => `<div class="spane-h"><div><h3>${t}</h3>${p ? `<p>${p}</p>` : ''}</div><button class="icb" data-sa="close" data-tip="Close (Esc)">${I.x}</button></div>`;
+  const listRow = (kind, it, k, arr) => `<div class="srow list"><input class="inp g1" data-f="${kind}-name" data-id="${esc(it.id)}" value="${esc(it.name)}" placeholder="Name"><input class="inp g2" data-f="${kind}-hint" data-id="${esc(it.id)}" value="${esc(it.hint)}" placeholder="${kind === 'stage' ? 'What belongs here' : 'When to use it'}"><button class="ic" data-sa="${kind}-up" data-id="${esc(it.id)}" data-tip="Move up" ${k === 0 ? 'disabled' : ''}>${I.chevUp}</button><button class="ic" data-sa="${kind}-down" data-id="${esc(it.id)}" data-tip="Move down" ${k === arr.length - 1 ? 'disabled' : ''}>${I.chevDn}</button><button class="ic" data-sa="${kind}-del" data-id="${esc(it.id)}" data-tip="Delete" ${kind === 'stage' && arr.length < 2 ? 'disabled' : ''}>${I.x}</button></div>`;
+  const panes = {
+    general: s => head('General') + `<div class="sgroup">
+      ${row('Workspace name', 'Shown in the top left', `<input class="inp" data-f="name" value="${esc(s.name)}" maxlength="60">`)}
+      ${row('Appearance', '', sel2('theme', [['system', 'Match system'], ['light', 'Light'], ['dark', 'Dark']], s.theme))}</div>`,
+    limits: s => head('Limits', 'Caps that keep the important things few.') + `<div class="sgroup">
+      ${row('Priority initiatives', 'How many initiatives can carry a star at once', `<input class="inp num" type="number" min="1" max="50" data-f="priorityCap" value="${s.priorityCap}">`)}
+      ${row('Daily plan size', 'A task joins Daily only when a slot is free or another task leaves', `<input class="inp num" type="number" min="1" max="50" data-f="dailyCap" value="${s.dailyCap}">`)}</div>`,
+    cycle: s => head('Objective cycle', 'The period your Weekly objectives cover.') + `<div class="sgroup">
+      ${row('Length', '', sel2('cycleDays', [[7, '1 week'], [14, '2 weeks'], [28, '4 weeks']].concat([7, 14, 28].includes(s.cycleDays) ? [] : [[s.cycleDays, s.cycleDays + ' days']]), s.cycleDays))}
+      ${row('Current cycle starts on', '', `<input type="date" class="inp" data-f="cycleStart" value="${s.cycleStart}">`)}
+      ${row('Objectives per cycle', 'How many outcomes you can set for one cycle', sel2('objectiveCap', [[3, '3'], [4, '4'], [5, '5']], s.objectiveCap))}</div>`,
+    stages: () => head('Stages', 'Board columns, left to right. Every initiative sits in exactly one.') + `<div class="sgroup">
+      ${S.stages.map((st, k, arr) => listRow('stage', st, k, arr)).join('')}
+      <div class="srow add"><button class="qlink" data-sa="stage-add">${I.plus}Add stage</button></div></div>`,
+    modes: () => head('Modes', 'The kind of energy a task needs. Number keys 1 to 9 follow this order.') + `<div class="sgroup">
+      ${S.modes.map((md, k, arr) => listRow('mode', md, k, arr)).join('')}
+      <div class="srow add"><button class="qlink" data-sa="mode-add">${I.plus}Add mode</button></div></div>`,
+    data: () => {
+      let syncRows;
+      if (!FS_OK) syncRows = row('Not available in this browser', 'Linking a file needs Chrome, Edge, Arc or another Chromium browser. Export and import still work.');
+      else if (sync.state === 'on') syncRows = row(`Linked to ${esc(sync.name)}`, 'Changes go both ways', `<button class="btn" data-sa="unlink">Unlink</button>`);
+      else if (sync.state === 'perm' || sync.state === 'error') syncRows = row(sync.state === 'perm' ? `${esc(sync.name)} needs your permission again` : `Could not reach ${esc(sync.name)}`, '', `<div class="btnrow"><button class="btn pri" data-sa="reconnect">Reconnect</button><button class="btn" data-sa="unlink">Unlink</button></div>`);
+      else syncRows = row('No file linked', 'Create a new file, or link one Claude already wrote', `<div class="btnrow"><button class="btn pri" data-sa="link-new">Create data file</button><button class="btn" data-sa="link-open">Link existing</button></div>`);
+      return head('Data and Claude', 'Everything saves in this browser as you go.') +
+        `<div class="sgroup-h">Sync with a file<small>Link a JSON file so Claude can read and edit your workspace. This page writes every change to it and picks up edits to the file within about 2 seconds.</small></div>
+        <div class="sgroup">${syncRows}</div>
+        <div class="sgroup-h">Import and export</div>
+        <div class="sgroup">${row('File', 'Save a copy, or replace this workspace with one', `<div class="btnrow"><button class="btn" data-sa="export">Export</button><button class="btn" data-sa="import">Import</button></div>`)}
+          ${row('Clipboard', 'Hand your workspace to Claude in a chat, or paste back what it returns', `<div class="btnrow"><button class="btn" data-sa="copy">Copy JSON</button><button class="btn" data-sa="paste">Paste JSON</button></div>`)}</div>
+        <div class="sgroup-h">Reset</div>
+        <div class="sgroup">${row('Sample workspace', 'A rider-app PM at Uber. Replaces what you have. You can undo.', `<button class="btn" data-sa="sample">Load sample</button>`)}
+          ${row('Clear everything', 'Removes all initiatives, tasks and objectives. Your Scratchpad stays. You can undo until you reload.', `<button class="btn" data-sa="clear">Clear</button>`)}</div>`;
+    }
+  };
+  const draw = () => {
+    const keep = m.querySelector('.spane') && m.querySelector('.spane').scrollTop;
+    m.innerHTML = `<nav class="snav" aria-label="Settings sections"><h2>Settings</h2>${TABS.map(([k, l]) => `<button data-tab="${k}" class="${settingsTab === k ? 'cur' : ''}">${l}</button>`).join('')}</nav><div class="spane">${panes[settingsTab](S.settings)}</div>`;
+    if (keep) m.querySelector('.spane').scrollTop = keep;
+  };
+  draw();
+  m.addEventListener('change', e => {
+    const el = e.target, f = el.dataset.f; if (!f) return;
+    const id = el.dataset.id, v = el.value;
+    commit(() => {
+      const s = S.settings;
+      switch (f) {
+        case 'name': s.name = v.trim().slice(0, 60) || 'Spacebar'; break;
+        case 'theme': s.theme = v; break;
+        case 'priorityCap': s.priorityCap = clampInt(v, 1, 50, s.priorityCap); break;
+        case 'dailyCap': s.dailyCap = clampInt(v, 1, 50, s.dailyCap); break;
+        case 'objectiveCap': s.objectiveCap = clampInt(v, 1, 10, s.objectiveCap); break;
+        case 'cycleDays': s.cycleDays = clampInt(v, 1, 120, s.cycleDays); break;
+        case 'cycleStart': if (!isYmd(v)) return false; s.cycleStart = v; break;
+        case 'stage-name': case 'stage-hint': { const st = S.stages.find(x => x.id === id); if (!st) return false; if (f === 'stage-name') st.name = v.trim() || st.name; else st.hint = v.trim(); break; }
+        case 'mode-name': case 'mode-hint': { const md = S.modes.find(x => x.id === id); if (!md) return false; if (f === 'mode-name') md.name = v.trim() || md.name; else md.hint = v.trim(); break; }
+        default: return false;
+      }
+    }, { flip: false });
+  });
+  m.addEventListener('click', async e => {
+    const t = e.target.closest('[data-tab]');
+    if (t) { settingsTab = t.dataset.tab; m.querySelector('.spane').scrollTop = 0; draw(); return; }
+    const b = e.target.closest('[data-sa]'); if (!b) return;
+    const a = b.dataset.sa, id = b.dataset.id;
+    const mv = (arr, dir) => { const k = arr.findIndex(x => x.id === id), j = k + dir; if (k < 0 || j < 0 || j >= arr.length) return false; [arr[k], arr[j]] = [arr[j], arr[k]]; };
+    switch (a) {
+      case 'close': closeModal(); return;
+      case 'stage-add': commit(() => { S.stages.push({ id: uid('s'), name: 'New stage', hint: '' }); }, { flip: false }); break;
+      case 'stage-up': commit(() => mv(S.stages, -1), { flip: false }); break;
+      case 'stage-down': commit(() => mv(S.stages, 1), { flip: false }); break;
+      case 'stage-del': {
+        const st = S.stages.find(x => x.id === id); if (!st || S.stages.length < 2) return;
+        const other = S.stages.find(x => x.id !== id);
+        const n = S.initiatives.filter(i => i.stage === id).length;
+        if (n && !(await confirmBox(`Delete the “${st.name}” stage? Its ${plural(n, 'initiative')} will move to “${other.name}”.`, 'Delete stage'))) return;
+        commit(() => { S.stages = S.stages.filter(x => x.id !== id); S.initiatives.forEach(i => { if (i.stage === id) i.stage = other.id; }); }, { flip: false }); break;
+      }
+      case 'mode-add': commit(() => { S.modes.push({ id: uid('m'), name: 'New mode', hint: '' }); }, { flip: false }); break;
+      case 'mode-up': commit(() => mv(S.modes, -1), { flip: false }); break;
+      case 'mode-down': commit(() => mv(S.modes, 1), { flip: false }); break;
+      case 'mode-del': {
+        const md = S.modes.find(x => x.id === id); if (!md) return;
+        const n = S.tasks.filter(t => t.mode === id).length;
+        if (n && !(await confirmBox(`Delete the “${md.name}” mode? ${plural(n, 'task')} will have no mode.`, 'Delete mode'))) return;
+        commit(() => { S.modes = S.modes.filter(x => x.id !== id); S.tasks.forEach(t => { if (t.mode === id) t.mode = null; }); }, { flip: false }); break;
+      }
+      case 'link-new': await linkNew(); break;
+      case 'link-open': await linkOpen(); break;
+      case 'unlink': await unlinkFile(); break;
+      case 'reconnect': await reconnect(); break;
+      case 'export': download(`spacebar-${today()}.json`, serialize()); return;
+      case 'import': importFile(); return;
+      case 'copy': toast((await copyText(serialize())) ? 'Workspace JSON copied. Paste it to Claude.' : 'Copy failed. Use Export instead.'); return;
+      case 'paste': openPaste(); return;
+      case 'sample':
+        if (!(await confirmBox('Replace your workspace with the sample? You can undo this.', 'Load sample'))) return;
+        commit(() => { const nm = S.settings.name, nt = S.notes; S = sampleData(); S.settings.name = nm; S.notes = nt; }, { flip: false }); toast('Sample loaded', { action: { label: 'Undo', fn: undo } }); break;
+      case 'clear':
+        if (!(await confirmBox('Delete every initiative, task and objective? You can undo this until you reload.', 'Clear everything'))) return;
+        commit(() => { const th = S.settings.theme, nm = S.settings.name, nt = S.notes; S = emptyData(); S.settings.theme = th; S.settings.name = nm; S.notes = nt; }, { flip: false }); toast('Workspace cleared', { action: { label: 'Undo', fn: undo } }); break;
+      default: return;
+    }
+    if (modals.length && modals[modals.length - 1].firstElementChild === m) draw();
+  });
+}
+function serialize() { return JSON.stringify(Object.assign({ _readme: README }, S), null, 2); }
+function download(name, text) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 800);
+}
+async function copyText(txt) {
+  try { await navigator.clipboard.writeText(txt); return true; } catch (e) {
+    const ta = document.createElement('textarea'); ta.value = txt; ta.style.cssText = 'position:fixed;opacity:0;top:0';
+    document.body.appendChild(ta); ta.select(); let ok = false; try { ok = document.execCommand('copy'); } catch (_) {} ta.remove(); return ok;
+  }
+}
+function loadWorkspace(text, label) {
+  let d;
+  try { d = normalize(JSON.parse(text)); } catch (e) { return 'That is not valid workspace JSON: ' + e.message; }
+  commit(() => { S = d; }, { flip: false });
+  toast(label || 'Workspace loaded', { action: { label: 'Undo', fn: undo } });
+  return null;
+}
+function importFile() {
+  const inp = document.createElement('input'); inp.type = 'file'; inp.accept = '.json,application/json';
+  inp.onchange = async () => { const f = inp.files && inp.files[0]; if (!f) return; const txt = await f.text();
+    if (!(await confirmBox(`Replace your workspace with “${f.name}”? You can undo this.`, 'Import'))) return;
+    const err = loadWorkspace(txt, 'Imported ' + f.name); if (err) toast(err); };
+  inp.click();
+}
+function openPaste() {
+  const m = openModal();
+  m.innerHTML = `<div class="mh-row"><h2>Paste workspace JSON</h2><button class="icb" data-x data-tip="Close">${I.x}</button></div>
+    <p class="note">Paste JSON from Claude or from an export. It replaces what you see now, and you can undo.</p>
+    <textarea class="ta" spellcheck="false" placeholder='{ "stages": [...], "initiatives": [...], "tasks": [...] }'></textarea><div class="err"></div>
+    <div class="btnrow end"><button class="btn" data-x>Cancel</button><button class="btn pri" data-load>Load</button></div>`;
+  const ta = $('.ta', m); setTimeout(() => ta.focus(), 40);
+  m.addEventListener('click', e => {
+    if (e.target.closest('[data-x]')) { closeModal(); return; }
+    if (e.target.closest('[data-load]')) { const err = loadWorkspace(ta.value); if (err) $('.err', m).textContent = err; else closeModal(); }
+  });
+}
+
+/* ================= File sync (lets Claude edit the workspace) ================= */
+const FS_OK = 'showSaveFilePicker' in window && 'indexedDB' in window;
+const sync = { handle: null, state: 'off', name: '', lastMod: 0, writing: false, dirty: false, timer: null, poll: null };
+function idb() { return new Promise((res, rej) => { const r = indexedDB.open('spacebar', 1); r.onupgradeneeded = () => r.result.createObjectStore('kv'); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }); }
+async function idbGet(k) { try { const db = await idb(); return await new Promise(res => { const qq = db.transaction('kv').objectStore('kv').get(k); qq.onsuccess = () => res(qq.result); qq.onerror = () => res(null); }); } catch (e) { return null; } }
+async function idbSet(k, v) { try { const db = await idb(); await new Promise(res => { const tx = db.transaction('kv', 'readwrite'); if (v == null) tx.objectStore('kv').delete(k); else tx.objectStore('kv').put(v, k); tx.oncomplete = res; tx.onerror = res; }); } catch (e) {} }
+const FILE_TYPES = [{ description: 'Spacebar workspace', accept: { 'application/json': ['.json'] } }];
+async function linkNew() {
+  try {
+    const h = await window.showSaveFilePicker({ suggestedName: 'spacebar.json', types: FILE_TYPES });
+    await attach(h); await writeNow(true); toast('Linked. Every change now saves to ' + h.name);
+  } catch (e) { if (e.name !== 'AbortError') toast('Could not link the file: ' + e.message); }
+}
+async function linkOpen() {
+  try {
+    const [h] = await window.showOpenFilePicker({ types: FILE_TYPES });
+    const f = await h.getFile(); const txt = await f.text();
+    let d; try { d = normalize(JSON.parse(txt)); } catch (e) { toast('That file is not workspace JSON. Use Create data file for a new one.'); return; }
+    if (!(await confirmBox(`Load “${h.name}” and replace what you see now? You can undo this.`, 'Load file'))) return;
+    commit(() => { S = d; }, { flip: false });
+    await attach(h); sync.lastMod = f.lastModified; sync.dirty = false; clearTimeout(sync.timer);
+    toast('Linked to ' + h.name);
+  } catch (e) { if (e.name !== 'AbortError') toast('Could not open the file: ' + e.message); }
+}
+async function attach(h) { sync.handle = h; sync.name = h.name; sync.state = 'on'; await idbSet('handle', h); startPoll(); renderSync(); }
+async function unlinkFile() { sync.handle = null; sync.state = 'off'; sync.name = ''; clearInterval(sync.poll); clearTimeout(sync.timer); await idbSet('handle', null); renderSync(); toast('File unlinked. Data stays in this browser.'); }
+function scheduleFileWrite() { if (sync.state !== 'on') return; sync.dirty = true; clearTimeout(sync.timer); sync.timer = setTimeout(() => writeNow(), 350); }
+async function writeNow(force) {
+  if (!sync.handle || (sync.state !== 'on' && !force)) return;
+  sync.writing = true; sync.dirty = false;
+  try {
+    const w = await sync.handle.createWritable(); await w.write(serialize()); await w.close();
+    const f = await sync.handle.getFile(); sync.lastMod = f.lastModified;
+  } catch (e) { syncError(e); }
+  finally { sync.writing = false; }
+}
+function startPoll() { clearInterval(sync.poll); sync.poll = setInterval(pollFile, 1500); }
+let pendingExternal = null;
+async function pollFile() {
+  if (sync.state !== 'on' || sync.writing || sync.dirty || document.hidden) return;
+  try {
+    const f = await sync.handle.getFile();
+    if (f.lastModified <= sync.lastMod) return;
+    let d; try { d = normalize(JSON.parse(await f.text())); } catch (e) { return; }
+    sync.lastMod = f.lastModified;
+    const strip = x => JSON.stringify(Object.assign({}, x, { updatedAt: '' }));
+    if (strip(d) === strip(S)) return;
+    if (editing || dragging || pop || modals.length || document.activeElement === notesEl) { pendingExternal = d; return; }
+    applyExternal(d);
+  } catch (e) { syncError(e); }
+}
+function applyExternal(d) {
+  pendingExternal = null;
+  pushHist(snapshot()); S = d; persistLocal(); render();
+  toast('Updated from ' + sync.name, { action: { label: 'Undo', fn: undo } });
+}
+setInterval(() => { if (pendingExternal && !editing && !dragging && !pop && !modals.length && document.activeElement !== notesEl) applyExternal(pendingExternal); }, 800);
+function syncError(e) { sync.state = e && e.name === 'NotAllowedError' ? 'perm' : 'error'; renderSync(); }
+async function reconnect() {
+  if (!sync.handle) return;
+  try { const p = await sync.handle.requestPermission({ mode: 'readwrite' }); if (p === 'granted') await resumeSync(); else toast('Permission was not granted'); }
+  catch (e) { syncError(e); toast('Could not reconnect: ' + e.message); }
+}
+async function resumeSync() {
+  try {
+    const f = await sync.handle.getFile();
+    const localT = Date.parse(S.updatedAt) || 0;
+    sync.state = 'on';
+    if (f.lastModified > localT + 1500) {
+      let d = null; try { d = normalize(JSON.parse(await f.text())); } catch (e) {}
+      if (d) { pushHist(snapshot()); S = d; persistLocal(); render(); toast('Loaded the latest from ' + sync.name); }
+      sync.lastMod = f.lastModified;
+    } else await writeNow(true);
+    startPoll(); renderSync();
+  } catch (e) { syncError(e); }
+}
+async function bootSync() {
+  if (!FS_OK) return;
+  const h = await idbGet('handle'); if (!h) return;
+  sync.handle = h; sync.name = h.name;
+  let p = 'denied'; try { p = await h.queryPermission({ mode: 'readwrite' }); } catch (e) {}
+  if (p === 'granted') await resumeSync(); else { sync.state = 'perm'; renderSync(); }
+}
+/* Only surfaces sync when it needs the user. */
+function renderSync() {
+  const b = $('#tb-warn'); if (!b) return;
+  if (sync.state === 'perm') { b.hidden = false; b.textContent = 'Reconnect ' + sync.name; b.dataset.tip = 'Allow this page to use ' + sync.name + ' again'; }
+  else if (sync.state === 'error') { b.hidden = false; b.textContent = 'File sync paused'; b.dataset.tip = 'Click to reconnect'; }
+  else b.hidden = true;
+}
+
+/* ================= Drag and drop (SortableJS) ================= */
+let sortables = [];
+function nearSib(el, dir, cls) { let n = dir > 0 ? el.nextElementSibling : el.previousElementSibling; while (n && !n.classList.contains(cls)) n = dir > 0 ? n.nextElementSibling : n.previousElementSibling; return n; }
+function placeIn(arr, item, next, prev) {
+  const k = arr.indexOf(item); if (k >= 0) arr.splice(k, 1);
+  if (next && arr.includes(next)) arr.splice(arr.indexOf(next), 0, item);
+  else if (prev && arr.includes(prev)) arr.splice(arr.indexOf(prev) + 1, 0, item);
+  else arr.push(item);
+}
+const outsideDaily = () => { const r = deckEls.daily.getBoundingClientRect(); return ptr.x < r.left || ptr.x > r.right || ptr.y < r.top || ptr.y > r.bottom; };
+['pointermove', 'mousemove'].forEach(ev => document.addEventListener(ev, e => {
+  ptr.x = e.clientX; ptr.y = e.clientY;
+  if (dragFromDaily) document.body.classList.toggle('drag-out', outsideDaily());
+}, true));
+function endDrag() { dragging = false; lastDragEnd = Date.now(); document.body.classList.remove('dragging', 'drag-task', 'drag-out'); }
+function initSortables() {
+  sortables.forEach(s => { try { s.destroy(); } catch (e) {} });
+  sortables = [];
+  if (!window.Sortable) return;
+  const base = {
+    animation: reduceMotion ? 0 : 180, easing: 'cubic-bezier(.2,.8,.2,1)', forceFallback: true, fallbackOnBody: true, fallbackTolerance: 4,
+    ghostClass: 'dnd-ghost', fallbackClass: 'dnd-fallback', filter: 'button,.editing,input', preventOnFilter: false,
+    onStart: ev => {
+      dragging = true; closePop(); hideTip(); document.body.classList.add('dragging');
+      if (!ev.item.classList.contains('ini')) document.body.classList.add('drag-task');
+      dragFromDaily = ev.from.dataset.zone === 'daily';
+    }
+  };
+  const target = { group: { name: 'drop', pull: false, put: ['board', 'daily'] }, sort: false };
+  const pullTo = to => to.el.dataset.zone === 'ini' ? true : 'clone';
+  if (boardLive()) {
+    $$('#board .col-body').forEach(el => sortables.push(Sortable.create(el, Object.assign({}, base, { group: { name: 'ini', pull: true, put: ['ini'] }, draggable: '.ini', handle: '.ini-top', onEnd: onIniDrop }))));
+    $$('#board .tasks').forEach(el => sortables.push(Sortable.create(el, Object.assign({}, base, { group: { name: 'board', pull: pullTo, put: ['board'] }, draggable: '.task', onEnd: onTaskDrop }))));
+  }
+  $$('#deck .obj-tasks, #deck .obj-drop').forEach(el => sortables.push(Sortable.create(el, Object.assign({}, base, target, { draggable: '.otask' }))));
+  sortables.push(Sortable.create($('#spine .spine-drop'), Object.assign({}, base, { group: { name: 'spine', pull: false, put: ['board'] }, sort: false, draggable: '.none' })));
+  $$('#deck .dlist .dl').forEach(el => {
+    if (el.dataset.zone !== 'daily') return;
+    sortables.push(Sortable.create(el, Object.assign({}, base, {
+      group: { name: 'daily', pull: to => to.el.dataset.zone === 'obj' ? 'clone' : true, put: ['board', 'daily'] },
+      draggable: '.drow', onEnd: onTaskDrop
+    })));
+  });
+}
+function onIniDrop(ev) {
+  endDrag();
+  const i = getIni(ev.item.dataset.id);
+  if (!i || (ev.from === ev.to && ev.oldIndex === ev.newIndex)) { render({ flip: false }); return; }
+  const before = snapshot();
+  i.stage = ev.to.dataset.stage;
+  const nx = nearSib(ev.item, 1, 'ini'), pv = nearSib(ev.item, -1, 'ini');
+  placeIn(S.initiatives, i, nx && getIni(nx.dataset.id), pv && getIni(pv.dataset.id));
+  pushHist(before); touch(); render({ flip: false });
+}
+function onTaskDrop(ev) {
+  const thrownOut = dragFromDaily && outsideDaily() && ev.to.dataset.zone !== 'obj';
+  dragFromDaily = false;
+  endDrag();
+  const id = ev.item.dataset.id, t = getTask(id);
+  const tz = ev.to.dataset.zone;
+  if (t && thrownOut) {
+    commit(() => { S.daily = S.daily.filter(x => x !== id); }, { flip: false });
+    toast('Removed from Daily', { action: { label: 'Undo', fn: undo } });
+    return;
+  }
+  if (!t || (ev.from === ev.to && ev.oldIndex === ev.newIndex)) { render({ flip: false }); return; }
+  const before = snapshot();
+  if (tz === 'ini') {
+    t.ini = ev.to.dataset.ini;
+    const nx = nearSib(ev.item, 1, 'task'), pv = nearSib(ev.item, -1, 'task');
+    placeIn(S.tasks, t, nx && getTask(nx.dataset.id), pv && getTask(pv.dataset.id));
+  } else if (tz === 'obj') {
+    if (t.obj === ev.to.dataset.obj) { render({ flip: false }); return; }
+    t.obj = ev.to.dataset.obj;
+  } else if (tz === 'daily') {
+    if (t.done) { render({ flip: false }); return; }
+    if (!inDaily(id) && S.daily.length >= S.settings.dailyCap) {
+      render({ flip: false });
+      dailyFull(id, planOpen() ? deckEls.daily.querySelector('.dhead h2') : spineEl);
+      return;
+    }
+    const nx = nearSib(ev.item, 1, 'drow'), pv = nearSib(ev.item, -1, 'drow');
+    const ids = S.daily.filter(x => x !== id);
+    const nId = nx && nx.dataset.id, pId = pv && pv.dataset.id;
+    if (nId && ids.includes(nId)) ids.splice(ids.indexOf(nId), 0, id);
+    else if (pId && ids.includes(pId)) ids.splice(ids.indexOf(pId) + 1, 0, id);
+    else ids.push(id);
+    S.daily = ids;
+    if (ev.from.dataset.zone === 'daily' && ev.to.dataset.gk === 'mode') { const gv = ev.to.dataset.gv; t.mode = gv && getMode(gv) ? gv : null; }
+  } else { render({ flip: false }); return; }
+  pushHist(before); touch(); render({ flip: false });
+}
+
+/* ================= Events ================= */
+document.addEventListener('click', e => {
+  if (Date.now() - lastDragEnd < 150) return;
+  if (e.target.closest('.pop, .modal-bg')) return;
+  const act = e.target.closest('[data-act]');
+  const nav = e.target.closest('[data-nav]');
+  if (nav && !nav.classList.contains('sel')) setSel(nav, false);
+  const dc = e.target.closest('.dcard');
+  if (dc && !dc.classList.contains('front') && planOpen()) { setPlan(dc.dataset.card); return; }
+  if (act) {
+    if (act.tagName === 'BUTTON') act.blur();
+    if (pop && pop.anchor === act) { closePop(); return; }
+    doAct(act.dataset.act, act, e); return;
+  }
+  const ed = e.target.closest('[data-edit]');
+  if (ed && !ed.isContentEditable && ed.dataset.edit === 'taskTitle') { startEdit(ed); return; }
+  if (!nav && !e.target.closest('.dcard, .topbar')) clearSel();
+});
+function ctx(el) { const n = el.closest('[data-nav]'); return n ? { kind: n.dataset.kind, id: n.dataset.id } : {}; }
+function doAct(a, el, e) {
+  const c = ctx(el);
+  switch (a) {
+    case 'toggleDone': toggleDone(c.id, el); break;
+    case 'mode': modePicker(c.id, el); break;
+    case 'obj': objPicker(c.id, el); break;
+    case 'openLink': { const ent = c.kind === 'ini' ? getIni(c.id) : getTask(c.id); if (ent && ent.link) openUrl(ent.link); break; }
+    case 'daily': toggleDaily(c.id, el); break;
+    case 'collapse': if (!e.target.closest('.editing')) toggleFold(c.id); break;
+    case 'timeline': timelinePop(c.id, el); break;
+    case 'iniMenu': iniMenu(c.id, el); break;
+    case 'taskMenu': taskMenu(c.id, el); break;
+    case 'objMenu': objMenu(c.id, el); break;
+    case 'addTask': addTask(c.id); break;
+    case 'addIni': addIni(el.dataset.stage); break;
+    case 'objToggle': if (!e.target.closest('.editing')) toggleObjOpen(c.id); break;
+    case 'objStatus': statusPicker(c.id, el); break;
+    case 'addObj': addObj(); break;
+    case 'linkTask': linkTaskPicker(c.id, el); break;
+    case 'unlinkObj': commit(() => { const t = getTask(c.id); if (!t) return false; t.obj = null; }); break;
+    case 'nextCycle': nextCycle(); break;
+    case 'togglePlan': setPlan(planOpen() ? 'min' : 'daily'); break;
+    case 'openPlan': setPlan('daily'); break;
+    case 'closePlan': setPlan('min'); break;
+    case 'toggleBlur': toggleBlur(); break;
+    case 'expandAll': expandAll(); break;
+    case 'prioFilter': UI.priorityOnly = !UI.priorityOnly; saveUI(); render({ flip: false }); break;
+    case 'clearFilters': UI.priorityOnly = false; saveUI(); $('#search').value = ''; setQuery(''); break;
+    case 'settings': openSettings(); break;
+    case 'shortcuts': openShortcuts(); break;
+    case 'sync': reconnect(); break;
+    case 'clearSample': startFresh(); break;
+    case 'keepSample': S.sample = false; touch(); render({ flip: false }); break;
+  }
+}
+let gPending = false, gTimer = null;
+document.addEventListener('pointerdown', () => document.body.classList.remove('kbd'), true);
+document.addEventListener('keyup', e => { if (e.key === ' ' && !(e.target.matches && e.target.matches('input,textarea,select,[contenteditable]'))) e.preventDefault(); }, true);
+document.addEventListener('keydown', e => {
+  if (!['Shift', 'Meta', 'Control', 'Alt'].includes(e.key)) document.body.classList.add('kbd');
+  if (editing) return;
+  if (modals.length) { if (e.key === 'Escape') { e.preventDefault(); closeModal(); } return; }
+  if (pop) {
+    if (pop.onKey && pop.onKey(e)) { e.preventDefault(); return; }
+    if (e.key === 'Escape') { e.preventDefault(); closePop(); return; }
+    if (pop.el.contains(e.target)) return;
+  }
+  const tg = e.target;
+  if (tg && tg.matches && (tg.matches('input,textarea,select') || tg.isContentEditable)) {
+    if (tg.id === 'search') {
+      if (e.key === 'Escape') { tg.value = ''; setQuery(''); tg.blur(); }
+      else if (e.key === 'ArrowDown' || e.key === 'Enter') { e.preventDefault(); tg.blur(); sel = null; moveSel(0, 1); }
+    } else if (e.key === 'Escape') { if (tg === notesEl) setPlan('min'); else tg.blur(); }
+    return;
+  }
+  const k = e.key, mod = e.metaKey || e.ctrlKey;
+  if (mod && (k === 'z' || k === 'Z')) { e.preventDefault(); if (e.shiftKey) redo(); else undo(); return; }
+  if (mod && k === 'y') { e.preventDefault(); redo(); return; }
+  if (mod && k === 'k') { e.preventDefault(); focusSearch(); return; }
+  if (mod) return;
+  if (k === ' ') { e.preventDefault(); if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur(); cyclePlan(e.shiftKey ? -1 : 1); return; }
+  if (gPending) {
+    gPending = false; clearTimeout(gTimer);
+    const card = { d: 'daily', w: 'weekly', n: 'notes' }[k.toLowerCase()];
+    if (card) { e.preventDefault(); setPlan(card, { focus: true }); }
+    return;
+  }
+  if (e.altKey) {
+    const d = { ArrowUp: [0, -1], ArrowDown: [0, 1], ArrowLeft: [-1, 0], ArrowRight: [1, 0] }[k];
+    if (d) { e.preventDefault(); moveSelected(d[0], d[1]); }
+    return;
+  }
+  switch (k) {
+    case 'ArrowDown': case 'j': e.preventDefault(); moveSel(0, 1); return;
+    case 'ArrowUp': case 'k': e.preventDefault(); moveSel(0, -1); return;
+    case 'ArrowLeft': case 'h': e.preventDefault(); moveSel(-1, 0); return;
+    case 'ArrowRight': case 'l': e.preventDefault(); moveSel(1, 0); return;
+    case '/': e.preventDefault(); if (planOpen() && UI.planBlur) setPlan('min'); focusSearch(); return;
+    case '?': e.preventDefault(); openShortcuts(); return;
+    case 'g': case 'G': gPending = true; gTimer = setTimeout(() => { gPending = false; }, 1200); return;
+    case 'b': case 'B': if (planOpen()) { e.preventDefault(); toggleBlur(); } return;
+    case 'A': e.preventDefault(); { const i = selIni(); addIni(i ? i.stage : S.stages[0].id); } return;
+    case 'O': e.preventDefault(); addObj(); return;
+    case 'n': e.preventDefault(); toggleNotes(); return;
+    case 'Escape':
+      if (planOpen()) setPlan('min'); else if (sel) clearSel(); else if (query) { $('#search').value = ''; setQuery(''); }
+      return;
+  }
+  if (!sel) {
+    if (k === 'a') { e.preventDefault(); toast('Select an initiative or task first. Use the arrow keys or click one.'); }
+    return;
+  }
+  const el = selEl(); if (!el) { sel = null; return; }
+  const id = sel.id, kind = sel.kind;
+  const btn = a => el.querySelector(`[data-act="${a}"]`) || el;
+  if (kind === 'task') {
+    const t = getTask(id); if (!t) return;
+    if (/^[0-9]$/.test(k)) { e.preventDefault(); const n = +k; if (n === 0) setMode(id, null); else if (S.modes[n - 1]) setMode(id, S.modes[n - 1].id); return; }
+    switch (k) {
+      case 'Enter': case 'e': e.preventDefault(); { const ed = el.querySelector('[data-edit]'); if (ed) startEdit(ed); } return;
+      case 'x': e.preventDefault(); selFallback = neighborOf(el); toggleDone(id, el.querySelector('[data-act="toggleDone"]')); return;
+      case 'd': e.preventDefault(); if (sel.z === 'plan' && el.classList.contains('drow')) selFallback = neighborOf(el); toggleDaily(id, btn('daily')); return;
+      case 'm': e.preventDefault(); modePicker(id, btn('mode')); return;
+      case 'o': e.preventDefault(); objPicker(id, btn('obj')); return;
+      case 's': e.preventDefault(); linkEditor('task', id, el); return;
+      case '.': e.preventDefault(); taskMenu(id, btn('taskMenu')); return;
+      case 'a': e.preventDefault(); addTask(t.ini, t.done ? null : id, sel.z); return;
+      case 'Delete': case 'Backspace': e.preventDefault(); selFallback = neighborOf(el); deleteTask(id); return;
+    }
+  } else if (kind === 'ini') {
+    switch (k) {
+      case 'Enter': case 'c': e.preventDefault(); toggleFold(id); return;
+      case 'e': e.preventDefault(); renameIni(id); return;
+      case 'a': e.preventDefault(); addTask(id); return;
+      case 'p': e.preventDefault(); togglePriority(id); return;
+      case 't': e.preventDefault(); timelinePop(id, iniAnchor(id)); return;
+      case 's': e.preventDefault(); linkEditor('ini', id, iniAnchor(id)); return;
+      case '.': e.preventDefault(); iniMenu(id, btn('iniMenu')); return;
+      case 'Delete': case 'Backspace': e.preventDefault(); selFallback = neighborOf(el); deleteIni(id); return;
+    }
+  } else if (kind === 'obj') {
+    if (k === '1' || k === '2' || k === '3') { e.preventDefault(); setStatus(id, ['on', 'risk', 'off'][+k - 1]); return; }
+    switch (k) {
+      case 'Enter': case 'c': e.preventDefault(); toggleObjOpen(id); return;
+      case 'e': e.preventDefault(); renameObj(id); return;
+      case 'a': e.preventDefault(); if (!UI.objOpen[id]) { UI.objOpen[id] = true; saveUI(); render(); } linkTaskPicker(id, selEl() || el); return;
+      case '.': e.preventDefault(); objMenu(id, el.querySelector('.obj-row')); return;
+      case 'Delete': case 'Backspace': e.preventDefault(); selFallback = neighborOf(el); deleteObj(id); return;
+    }
+  }
+});
+function selIni() { if (!sel) return null; if (sel.kind === 'ini') return getIni(sel.id); if (sel.kind === 'task') { const t = getTask(sel.id); return t ? getIni(t.ini) : null; } return null; }
+function focusSearch() { const s = $('#search'); s.focus(); s.select(); }
+let qTimer = null;
+$('#search').addEventListener('input', e => { clearTimeout(qTimer); const v = e.target.value; qTimer = setTimeout(() => setQuery(v), 70); });
+spineEl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); setPlan('daily'); } });
+window.addEventListener('resize', () => { applyPlan(false); if (pop) placePop(pop.el, pop.anchor, false); });
+window.addEventListener('storage', e => {
+  if (e.key !== LS_DATA || !e.newValue || editing) return;
+  try { S = normalize(JSON.parse(e.newValue)); render({ flip: false }); } catch (_) {}
+});
+let lastDay = today();
+setInterval(() => { if (today() !== lastDay) { lastDay = today(); render({ flip: false }); } }, 60000);
+
+/* ================= Boot ================= */
+render();
+bootSync();
+})();
+</script>
+</body>
+</html>
